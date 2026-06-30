@@ -1,0 +1,3 @@
+# Eval harness extras (metrics.py itself is pure stdlib — no deps).
+openai>=1.0        # golden-set generation + generation eval
+ragas>=0.1         # generation metrics: faithfulness, answer relevancy, context precision/recall
