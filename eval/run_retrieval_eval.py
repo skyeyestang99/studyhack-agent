@@ -23,11 +23,9 @@ THRESHOLDS = {"recall@k": 0.85, "mrr": 0.70, "isolation": 1.0}
 
 
 def build_retriever() -> Retriever:
-    # TODO: return the real agent retriever (pgvector course-scoped search over
-    # material_chunks). Until then, tests inject a DummyRetriever.
-    raise NotImplementedError(
-        "Wire the agent retriever here, or pass a retriever into evaluate() in tests."
-    )
+    from .pg_retriever import PgvectorRetriever
+
+    return PgvectorRetriever()
 
 
 def load_goldenset(path: str) -> list[dict]:
