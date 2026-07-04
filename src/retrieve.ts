@@ -35,7 +35,8 @@ export async function retrieve(
             mc.embedding <=> $1 AS distance
      FROM material_chunks mc
      JOIN materials m ON m.id = mc.material_id
-     WHERE mc.scope = 'shared' AND mc.course_id = $2
+     WHERE m.deleted_at IS NULL
+       AND mc.scope = 'shared' AND mc.course_id = $2
      ORDER BY mc.embedding <=> $1
      LIMIT $3`,
     [pgvector.toSql(embedding), courseId, k],
