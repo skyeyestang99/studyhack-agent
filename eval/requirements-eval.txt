@@ -1,3 +1,7 @@
-# Eval harness extras (metrics.py itself is pure stdlib — no deps).
-openai>=1.0        # golden-set generation + generation eval
-ragas>=0.1         # generation metrics: faithfulness, answer relevancy, context precision/recall
+# Eval harness deps (metrics.py itself is pure stdlib — no deps).
+openai>=1.0            # golden-set generation + embeddings + generation eval
+psycopg[binary]>=3.1   # Postgres access for the pgvector retriever
+pgvector>=0.2          # vector type adapter for psycopg
+numpy>=1.26            # vector params
+python-dotenv>=1.0     # load .env
+# ragas>=0.1           # (later) generation metrics: faithfulness, answer relevancy

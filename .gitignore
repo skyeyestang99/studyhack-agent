@@ -22,3 +22,7 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+
+# eval generated data + venv
+eval/data/
+.venv*/
