@@ -8,6 +8,11 @@ export const config = {
   openaiApiKey: process.env.OPENAI_API_KEY ?? "",
   embeddingModel: process.env.EMBEDDING_MODEL ?? "text-embedding-3-small",
   embeddingDim: 1536,
+  chatModel: process.env.CHAT_MODEL ?? "gpt-4o-mini",
+
+  // Agent HTTP server
+  port: Number(process.env.PORT ?? 2024),
+  internalSecret: process.env.INTERNAL_JWT_SECRET ?? "",
 
   // R2 (S3-compatible). Accept an explicit endpoint or derive it from the account id.
   r2: {

@@ -7,6 +7,7 @@ export interface RetrievedChunk {
   materialId: string;
   courseId: string | null;
   content: string;
+  fileName: string;
   score: number; // cosine similarity (1 - distance)
 }
 
@@ -14,6 +15,7 @@ export interface RetrievedChunk {
  * Course-scoped ANN retrieval over shared chunks. The scope filter is a
  * deterministic DB predicate (never the LLM) — only chunks for `courseId`
  * are returned, which is also the isolation guarantee the eval harness checks.
+ * Joins `materials` for citation provenance (fileName).
  */
 export async function retrieve(
   question: string,
@@ -26,12 +28,15 @@ export async function retrieve(
     material_id: string;
     course_id: string;
     content: string;
+    file_name: string;
     distance: number;
   }>(
-    `SELECT id, material_id, course_id, content, embedding <=> $1 AS distance
-     FROM material_chunks
-     WHERE scope = 'shared' AND course_id = $2
-     ORDER BY embedding <=> $1
+    `SELECT mc.id, mc.material_id, mc.course_id, mc.content, m.file_name,
+            mc.embedding <=> $1 AS distance
+     FROM material_chunks mc
+     JOIN materials m ON m.id = mc.material_id
+     WHERE mc.scope = 'shared' AND mc.course_id = $2
+     ORDER BY mc.embedding <=> $1
      LIMIT $3`,
     [pgvector.toSql(embedding), courseId, k],
   );
@@ -40,6 +45,7 @@ export async function retrieve(
     materialId: r.material_id,
     courseId: r.course_id,
     content: r.content,
+    fileName: r.file_name,
     score: 1 - Number(r.distance),
   }));
 }
