@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
+import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
 
@@ -10,6 +11,29 @@ const app = Fastify({ logger: true });
 const CITATION_MIN_SCORE = 0.35;
 
 app.get("/health", async () => ({ ok: true }));
+
+/**
+ * Embed a material (or all pending) on demand. Called fire-and-forget by the
+ * backend right after upload so the "upload → get help" journey works without
+ * a manual `npm run ingest`. Auth: shared-secret Bearer (INTERNAL_JWT_SECRET).
+ */
+app.post("/ingest", async (req, reply) => {
+  const auth = req.headers.authorization;
+  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const { materialId } = (req.body ?? {}) as { materialId?: string };
+  try {
+    if (materialId) {
+      const { chunks } = await ingestMaterial(materialId);
+      return { ok: true, chunks };
+    }
+    await ingestPending();
+    return { ok: true };
+  } catch (err) {
+    return reply.code(500).send({ error: err instanceof Error ? err.message : "ingest failed" });
+  }
+});
 
 /**
  * Chat: retrieve course-scoped context, generate a grounded answer, stream it
