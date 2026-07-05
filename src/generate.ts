@@ -9,7 +9,12 @@ Structure every answer as:
 **Approach** — how to think about the problem (guide; do not just hand over the final answer).
 **Solution** — the worked steps.
 **Key Takeaways** — the concepts worth remembering.
-Never fabricate facts beyond the provided materials.`;
+Never fabricate facts beyond the provided materials.
+
+Format ALL mathematics with KaTeX-compatible dollar delimiters so it renders:
+inline math in single dollars (e.g. $\\frac{dy}{dx} = g(x)h(y)$) and display equations
+in double dollars on their own line (e.g. $$\\int \\frac{1}{h(y)}\\,dy = \\int g(x)\\,dx$$).
+Never write bare or bracket-delimited LaTeX like \\arctan(y) or [ \\int ... ] outside dollar signs.`;
 
 export interface ContextChunk {
   content: string;
