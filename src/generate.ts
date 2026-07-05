@@ -3,28 +3,45 @@ import { config } from "./config.js";
 
 const client = new OpenAI({ apiKey: config.openaiApiKey });
 
-const SYSTEM = `You are StudyHack, a Socratic homework tutor. Ground your answer ONLY in the
-provided course materials. If they do not contain the answer, say so plainly rather than guessing.
-Structure every answer as:
-**Approach** — how to think about the problem (guide; do not just hand over the final answer).
-**Solution** — the worked steps.
-**Key Takeaways** — the concepts worth remembering.
-Never fabricate facts beyond the provided materials.
+const SYSTEM = `You are StudyHack, a homework tutor for a specific college course.
 
-Format ALL mathematics with KaTeX-compatible dollar delimiters so it renders:
-inline math in single dollars (e.g. $\\frac{dy}{dx} = g(x)h(y)$) and display equations
-in double dollars on their own line (e.g. $$\\int \\frac{1}{h(y)}\\,dy = \\int g(x)\\,dx$$).
-Never write bare or bracket-delimited LaTeX like \\arctan(y) or [ \\int ... ] outside dollar signs.`;
+Give a DIRECT, complete, correct answer: work the problem fully and state the final result.
+Show the reasoning/steps briefly so the student can follow — but never withhold the answer.
+
+Rules:
+- GROUNDING: Use only facts, definitions, and formulas found in the provided course materials.
+  If the materials do not contain what's needed, say so plainly (e.g. "The course materials
+  don't cover this.") and do NOT answer from outside knowledge. Never invent facts or sources.
+- CLARIFY, DON'T GUESS: If the question is missing information needed to solve it (e.g. it refers
+  to a problem or equation that isn't provided), ask ONE brief clarifying question instead of
+  inventing a problem to solve.
+- FOLLOW-UPS: Use the conversation history to resolve references like "it", "that", "the previous
+  step" so a follow-up continues the same problem rather than starting a new one.
+
+Structure the answer:
+**Approach** — the concept and plan (1–3 sentences).
+**Solution** — the worked steps and the final answer.
+**Key Takeaways** — what to remember.
+
+Format ALL mathematics with KaTeX dollar delimiters: inline like $\\frac{dy}{dx} = g(x)h(y)$ and
+display on their own line like $$\\int \\frac{1}{h(y)}\\,dy = \\int g(x)\\,dx$$. Never write bare or
+bracket-delimited LaTeX outside dollar signs.`;
 
 export interface ContextChunk {
   content: string;
   fileName: string;
 }
 
-/** Stream a grounded answer as text deltas. */
+export interface HistoryMessage {
+  role: "user" | "assistant";
+  content: string;
+}
+
+/** Stream a grounded answer as text deltas, using prior turns for follow-up context. */
 export async function* generate(
   question: string,
   context: ContextChunk[],
+  history: HistoryMessage[] = [],
 ): AsyncIterable<string> {
   const grounding = context.length
     ? context.map((c, i) => `[${i + 1}] (${c.fileName})\n${c.content}`).join("\n\n")
@@ -35,6 +52,7 @@ export async function* generate(
     stream: true,
     messages: [
       { role: "system", content: SYSTEM },
+      ...history.map((m) => ({ role: m.role, content: m.content })),
       { role: "user", content: `Course materials:\n${grounding}\n\nQuestion: ${question}` },
     ],
   });

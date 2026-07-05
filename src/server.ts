@@ -1,9 +1,13 @@
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
-import { generate } from "./generate.js";
+import { generate, type HistoryMessage } from "./generate.js";
 
 const app = Fastify({ logger: true });
+
+// Only cite a source whose best chunk is actually relevant to the question.
+// Keeps off-topic answers/refusals from showing spurious "sources" (cosine sim).
+const CITATION_MIN_SCORE = 0.35;
 
 app.get("/health", async () => ({ ok: true }));
 
@@ -18,10 +22,11 @@ app.post("/chat", async (req, reply) => {
     return reply.code(401).send({ error: "unauthorized" });
   }
 
-  const { question, courseId, k } = (req.body ?? {}) as {
+  const { question, courseId, k, history } = (req.body ?? {}) as {
     question?: string;
     courseId?: string;
     k?: number;
+    history?: HistoryMessage[];
   };
   if (!question || !courseId) {
     return reply.code(400).send({ error: "question and courseId are required" });
@@ -39,12 +44,15 @@ app.post("/chat", async (req, reply) => {
     for await (const token of generate(
       question,
       chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
+      Array.isArray(history) ? history : [],
     )) {
       send({ type: "token", content: token });
     }
-    // One citation per distinct source material (Doc 05 §4 contract).
+    // One citation per distinct source material, only when actually relevant
+    // (Doc 05 §4). Off-topic/ungrounded answers therefore cite nothing.
     const seen = new Set<string>();
     for (const c of chunks) {
+      if (c.score < CITATION_MIN_SCORE) continue;
       if (seen.has(c.materialId)) continue;
       seen.add(c.materialId);
       send({
