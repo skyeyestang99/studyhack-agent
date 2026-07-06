@@ -139,6 +139,7 @@ app.post("/chat", async (req, reply) => {
         type: "citation",
         materialId: c.materialId,
         fileName: c.fileName,
+        page: c.page,
         score: Number(c.score.toFixed(3)),
         kind: "shared",
       });
@@ -207,6 +208,7 @@ app.post("/study-tool", async (req, reply) => {
         type: "citation",
         materialId: c.materialId,
         fileName: c.fileName,
+        page: c.page,
         score: Number(c.score.toFixed(3)),
         kind: "shared",
       });

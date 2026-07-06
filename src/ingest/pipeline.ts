@@ -31,8 +31,14 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
   await query("UPDATE materials SET embedding_status='processing' WHERE id=$1", [m.id]);
   try {
     const bytes = await getObjectBytes(m.r2_key);
-    const { text } = await extract(bytes, m.content_type ?? "", m.file_name);
-    const chunks = chunkText(text, config.chunk.targetTokens, config.chunk.overlapTokens);
+    const { text, pageTexts } = await extract(bytes, m.content_type ?? "", m.file_name);
+    const pages = pageTexts && pageTexts.length ? pageTexts : [text];
+    const chunks: { content: string; approxTokens: number; page: number }[] = [];
+    pages.forEach((pt, pi) => {
+      for (const c of chunkText(pt, config.chunk.targetTokens, config.chunk.overlapTokens)) {
+        chunks.push({ content: c.content, approxTokens: c.approxTokens, page: pi + 1 });
+      }
+    });
     const embeddings = await embedBatch(chunks.map((c) => c.content));
 
     const client = await pool.connect();
@@ -42,11 +48,11 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
       for (let i = 0; i < chunks.length; i++) {
         await client.query(
           `INSERT INTO material_chunks
-             (material_id, chunk_index, content, embedding, scope, course_id, owner_user_id, token_count)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+             (material_id, chunk_index, content, embedding, scope, course_id, owner_user_id, token_count, page)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
           [
-            m.id, chunks[i].index, chunks[i].content, pgvector.toSql(embeddings[i]),
-            m.scope, m.course_id, m.owner_user_id, chunks[i].approxTokens,
+            m.id, i, chunks[i].content, pgvector.toSql(embeddings[i]),
+            m.scope, m.course_id, m.owner_user_id, chunks[i].approxTokens, chunks[i].page,
           ],
         );
       }
