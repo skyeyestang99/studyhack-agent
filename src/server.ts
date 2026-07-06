@@ -11,6 +11,18 @@ const app = Fastify({ logger: true });
 // Keeps off-topic answers/refusals from showing spurious "sources" (cosine sim).
 const CITATION_MIN_SCORE = 0.35;
 
+// Grounding mode from the top retrieved chunk's similarity → an honest badge.
+// grounded = strong material match; partial = weak; general = fallback/no match.
+const GROUNDED_MIN_SCORE = 0.45;
+const PARTIAL_MIN_SCORE = 0.3;
+type GroundingMode = "grounded" | "partial" | "general";
+function classifyMode(topScore: number | undefined): GroundingMode {
+  if (topScore === undefined) return "general";
+  if (topScore >= GROUNDED_MIN_SCORE) return "grounded";
+  if (topScore >= PARTIAL_MIN_SCORE) return "partial";
+  return "general";
+}
+
 app.get("/health", async () => ({ ok: true }));
 
 /**
@@ -67,6 +79,12 @@ app.post("/chat", async (req, reply) => {
 
   try {
     const chunks = await retrieve(question, courseId, k ?? 5);
+    const mode = classifyMode(chunks[0]?.score);
+    send({
+      type: "mode",
+      mode,
+      topSource: mode === "general" ? undefined : chunks[0]?.fileName,
+    });
     for await (const token of generate(
       question,
       chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
@@ -131,6 +149,12 @@ app.post("/study-tool", async (req, reply) => {
     const query =
       topic?.trim() || "key concepts, definitions, formulas, and important exam topics";
     const chunks = await retrieve(query, courseId, k ?? 15);
+    const mode = classifyMode(chunks[0]?.score);
+    send({
+      type: "mode",
+      mode,
+      topSource: mode === "general" ? undefined : chunks[0]?.fileName,
+    });
     for await (const token of generateStudyTool(
       kind,
       topic ?? "",
