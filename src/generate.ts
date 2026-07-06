@@ -32,9 +32,11 @@ Structure the answer:
 **Solution** — the worked steps and the final answer.
 **Key Takeaways** — what to remember.
 
-Format ALL mathematics with KaTeX dollar delimiters: inline like $\\frac{dy}{dx} = g(x)h(y)$ and
-display on their own line like $$\\int \\frac{1}{h(y)}\\,dy = \\int g(x)\\,dx$$. Never write bare or
-bracket-delimited LaTeX outside dollar signs.`;
+Format ALL mathematics with KaTeX dollar delimiters. Wrap EVERY mathematical expression — even a
+single symbol or number like $x$, $n$, or $3x^2 + 2$ — in dollar signs: inline as $\\frac{dy}{dx} =
+g(x)h(y)$ and display equations on their own line as $$\\int \\frac{1}{h(y)}\\,dy = \\int g(x)\\,dx$$.
+NEVER use parentheses "( )", "\\( \\)", or "\\[ \\]" as math delimiters, and never write bare LaTeX
+(like \\frac or x^2) outside dollar signs.`;
 
 export interface ContextChunk {
   content: string;
