@@ -64,17 +64,25 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
     }
     return { chunks: chunks.length };
   } catch (err) {
-    await query("UPDATE materials SET embedding_status='failed' WHERE id=$1", [m.id]);
+    await query(
+      "UPDATE materials SET embedding_status='failed', embedding_attempts=embedding_attempts+1 WHERE id=$1",
+      [m.id],
+    );
     throw err;
   }
 }
 
-/** Ingest all materials still pending embedding. */
+const MAX_EMBED_ATTEMPTS = 3;
+
+/** Ingest all materials still pending embedding (or failed under the retry cap). */
 export async function ingestPending(limit = 50): Promise<void> {
   const rows = await query<{ id: string }>(
-    `SELECT id FROM materials WHERE embedding_status='pending' AND deleted_at IS NULL
+    `SELECT id FROM materials
+       WHERE deleted_at IS NULL
+         AND (embedding_status = 'pending'
+              OR (embedding_status = 'failed' AND embedding_attempts < $2))
      ORDER BY created_at LIMIT $1`,
-    [limit],
+    [limit, MAX_EMBED_ATTEMPTS],
   );
   for (const r of rows) {
     try {

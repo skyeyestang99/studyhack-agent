@@ -1,4 +1,5 @@
 import { extractText, getDocumentProxy } from "unpdf";
+import { parseOfficeAsync } from "officeparser";
 
 export interface Extracted {
   text: string;
@@ -6,9 +7,8 @@ export interface Extracted {
 }
 
 /**
- * Extract plain text from a file by content type. Minimal slice: PDF + text.
- * (Upgrade path: LlamaParse for clean Markdown; python-pptx/mammoth for PPTX/DOCX;
- * OCR for scanned PDFs.)
+ * Extract plain text from a file by content type: PDF, Office (docx/pptx), and
+ * plain text. (Upgrade path: OCR/vision for scanned PDFs + image uploads.)
  */
 export async function extract(
   bytes: Buffer,
@@ -22,6 +22,13 @@ export async function extract(
     const pdf = await getDocumentProxy(new Uint8Array(bytes));
     const { text, totalPages } = await extractText(pdf, { mergePages: true });
     return { text: Array.isArray(text) ? text.join("\n") : text, pages: totalPages };
+  }
+
+  const isOffice =
+    /\.(docx|pptx|xlsx)$/.test(name) || /officedocument/.test(contentType);
+  if (isOffice) {
+    const text = await parseOfficeAsync(bytes);
+    return { text: text ?? "", pages: 1 };
   }
 
   if (/text|csv|markdown|json/.test(contentType) || /\.(txt|csv|md|json)$/.test(name)) {
