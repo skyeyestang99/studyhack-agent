@@ -8,6 +8,7 @@ export interface RetrievedChunk {
   courseId: string | null;
   content: string;
   fileName: string;
+  page?: number;
   score: number; // cosine similarity (1 - distance)
 }
 
@@ -17,6 +18,7 @@ interface Row {
   course_id: string;
   content: string;
   file_name: string;
+  page: number | null;
   distance: number;
 }
 
@@ -43,7 +45,7 @@ export async function retrieve(
     await client.query("BEGIN");
     await client.query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'");
     const res = await client.query<Row>(
-      `SELECT mc.id, mc.material_id, mc.course_id, mc.content, m.file_name,
+      `SELECT mc.id, mc.material_id, mc.course_id, mc.content, m.file_name, mc.page,
               mc.embedding <=> $1 AS distance
        FROM material_chunks mc
        JOIN materials m ON m.id = mc.material_id
@@ -60,6 +62,7 @@ export async function retrieve(
       courseId: r.course_id,
       content: r.content,
       fileName: r.file_name,
+      page: r.page ?? undefined,
       score: 1 - Number(r.distance),
     }));
   } catch (err) {

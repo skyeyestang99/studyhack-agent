@@ -5,6 +5,7 @@ import { ocrPdf } from "./ocr.js";
 export interface Extracted {
   text: string;
   pages: number;
+  pageTexts?: string[]; // per-page text (PDF) so chunks can record their page number
 }
 
 /**
@@ -21,25 +22,28 @@ export async function extract(
 
   if (isPdf) {
     const pdfDoc = await getDocumentProxy(new Uint8Array(bytes));
-    const { text, totalPages } = await extractText(pdfDoc, { mergePages: true });
-    const merged = Array.isArray(text) ? text.join("\n") : text;
+    // mergePages:false → per-page array, so chunks can carry their page number.
+    const { text, totalPages } = await extractText(pdfDoc, { mergePages: false });
+    const pageTexts = Array.isArray(text) ? text : [text];
+    const merged = pageTexts.join("\n");
     // A scanned/photographed PDF has little or no text layer — OCR it (vision).
     if (merged.trim().length >= Math.max(40, totalPages * 20)) {
-      return { text: merged, pages: totalPages };
+      return { text: merged, pages: totalPages, pageTexts };
     }
     const ocrText = await ocrPdf(bytes);
-    return { text: ocrText || merged, pages: totalPages };
+    return { text: ocrText || merged, pages: totalPages, pageTexts: [ocrText || merged] };
   }
 
   const isOffice =
     /\.(docx|pptx|xlsx)$/.test(name) || /officedocument/.test(contentType);
   if (isOffice) {
-    const text = await parseOfficeAsync(bytes);
-    return { text: text ?? "", pages: 1 };
+    const text = (await parseOfficeAsync(bytes)) ?? "";
+    return { text, pages: 1, pageTexts: [text] };
   }
 
   if (/text|csv|markdown|json/.test(contentType) || /\.(txt|csv|md|json)$/.test(name)) {
-    return { text: bytes.toString("utf8"), pages: 1 };
+    const text = bytes.toString("utf8");
+    return { text, pages: 1, pageTexts: [text] };
   }
 
   throw new Error(`Unsupported content type for extraction: ${contentType} (${fileName})`);
