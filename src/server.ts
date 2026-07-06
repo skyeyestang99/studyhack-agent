@@ -2,6 +2,7 @@ import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
+import { generateStudyTool, type StudyToolKind } from "./study.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
@@ -76,6 +77,68 @@ app.post("/chat", async (req, reply) => {
     }
     // One citation per distinct source material, only when actually relevant
     // (Doc 05 §4). Off-topic/ungrounded answers therefore cite nothing.
+    const seen = new Set<string>();
+    for (const c of chunks) {
+      if (c.score < CITATION_MIN_SCORE) continue;
+      if (seen.has(c.materialId)) continue;
+      seen.add(c.materialId);
+      send({
+        type: "citation",
+        materialId: c.materialId,
+        fileName: c.fileName,
+        score: Number(c.score.toFixed(3)),
+        kind: "shared",
+      });
+    }
+    send({ type: "done" });
+  } catch (err) {
+    send({ type: "error", message: err instanceof Error ? err.message : "agent error" });
+  } finally {
+    reply.raw.end();
+  }
+});
+
+/**
+ * Study tools: generate a grounded study guide or practice-problem set from the
+ * course materials, streamed as SSE (token / citation / done). Reuses the same
+ * course-scoped retrieval + citation-relevance gate as /chat.
+ */
+app.post("/study-tool", async (req, reply) => {
+  const auth = req.headers.authorization;
+  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const { kind, courseId, topic, count, k } = (req.body ?? {}) as {
+    kind?: StudyToolKind;
+    courseId?: string;
+    topic?: string;
+    count?: number;
+    k?: number;
+  };
+  if (!courseId || (kind !== "study_guide" && kind !== "practice_problems")) {
+    return reply.code(400).send({ error: "courseId and a valid kind are required" });
+  }
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (e: unknown) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+
+  try {
+    // Broader retrieval than chat — a guide/practice set should span the topic.
+    const query =
+      topic?.trim() || "key concepts, definitions, formulas, and important exam topics";
+    const chunks = await retrieve(query, courseId, k ?? 15);
+    for await (const token of generateStudyTool(
+      kind,
+      topic ?? "",
+      chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
+      count ?? 5,
+    )) {
+      send({ type: "token", content: token });
+    }
     const seen = new Set<string>();
     for (const c of chunks) {
       if (c.score < CITATION_MIN_SCORE) continue;
