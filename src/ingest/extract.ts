@@ -1,5 +1,6 @@
 import { extractText, getDocumentProxy } from "unpdf";
 import { parseOfficeAsync } from "officeparser";
+import { ocrPdf } from "./ocr.js";
 
 export interface Extracted {
   text: string;
@@ -7,8 +8,8 @@ export interface Extracted {
 }
 
 /**
- * Extract plain text from a file by content type: PDF, Office (docx/pptx), and
- * plain text. (Upgrade path: OCR/vision for scanned PDFs + image uploads.)
+ * Extract plain text from a file by content type: PDF (with OCR fallback for
+ * scanned/image PDFs), Office (docx/pptx), and plain text.
  */
 export async function extract(
   bytes: Buffer,
@@ -19,9 +20,15 @@ export async function extract(
   const isPdf = contentType.includes("pdf") || name.endsWith(".pdf");
 
   if (isPdf) {
-    const pdf = await getDocumentProxy(new Uint8Array(bytes));
-    const { text, totalPages } = await extractText(pdf, { mergePages: true });
-    return { text: Array.isArray(text) ? text.join("\n") : text, pages: totalPages };
+    const pdfDoc = await getDocumentProxy(new Uint8Array(bytes));
+    const { text, totalPages } = await extractText(pdfDoc, { mergePages: true });
+    const merged = Array.isArray(text) ? text.join("\n") : text;
+    // A scanned/photographed PDF has little or no text layer — OCR it (vision).
+    if (merged.trim().length >= Math.max(40, totalPages * 20)) {
+      return { text: merged, pages: totalPages };
+    }
+    const ocrText = await ocrPdf(bytes);
+    return { text: ocrText || merged, pages: totalPages };
   }
 
   const isOffice =

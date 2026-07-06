@@ -2,6 +2,8 @@ import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
+import { generateStudyTool, type StudyToolKind } from "./study.js";
+import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
@@ -9,6 +11,18 @@ const app = Fastify({ logger: true });
 // Only cite a source whose best chunk is actually relevant to the question.
 // Keeps off-topic answers/refusals from showing spurious "sources" (cosine sim).
 const CITATION_MIN_SCORE = 0.35;
+
+// Grounding mode from the top retrieved chunk's similarity → an honest badge.
+// grounded = strong material match; partial = weak; general = fallback/no match.
+const GROUNDED_MIN_SCORE = 0.45;
+const PARTIAL_MIN_SCORE = 0.3;
+type GroundingMode = "grounded" | "partial" | "general";
+function classifyMode(topScore: number | undefined): GroundingMode {
+  if (topScore === undefined) return "general";
+  if (topScore >= GROUNDED_MIN_SCORE) return "grounded";
+  if (topScore >= PARTIAL_MIN_SCORE) return "partial";
+  return "general";
+}
 
 app.get("/health", async () => ({ ok: true }));
 
@@ -65,17 +79,104 @@ app.post("/chat", async (req, reply) => {
   const send = (e: unknown) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
 
   try {
+    let answerText = "";
     const chunks = await retrieve(question, courseId, k ?? 5);
+    const mode = classifyMode(chunks[0]?.score);
+    send({
+      type: "mode",
+      mode,
+      topSource: mode === "general" ? undefined : chunks[0]?.fileName,
+    });
     for await (const token of generate(
       question,
       chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
       Array.isArray(history) ? history : [],
       imageDataUrl,
     )) {
+      answerText += token;
       send({ type: "token", content: token });
+    }
+    // Best-effort numeric verification of a checkable math claim (no CAS/Python).
+    // Only surface a badge when a check actually passes.
+    if (looksComputational(answerText)) {
+      const claim = await extractClaim(answerText);
+      if (claim) {
+        const result = verifyClaim(claim);
+        if (result.status === "verified") {
+          send({ type: "verification", status: "verified", detail: result.detail });
+        }
+      }
     }
     // One citation per distinct source material, only when actually relevant
     // (Doc 05 §4). Off-topic/ungrounded answers therefore cite nothing.
+    const seen = new Set<string>();
+    for (const c of chunks) {
+      if (c.score < CITATION_MIN_SCORE) continue;
+      if (seen.has(c.materialId)) continue;
+      seen.add(c.materialId);
+      send({
+        type: "citation",
+        materialId: c.materialId,
+        fileName: c.fileName,
+        score: Number(c.score.toFixed(3)),
+        kind: "shared",
+      });
+    }
+    send({ type: "done" });
+  } catch (err) {
+    send({ type: "error", message: err instanceof Error ? err.message : "agent error" });
+  } finally {
+    reply.raw.end();
+  }
+});
+
+/**
+ * Study tools: generate a grounded study guide or practice-problem set from the
+ * course materials, streamed as SSE (token / citation / done). Reuses the same
+ * course-scoped retrieval + citation-relevance gate as /chat.
+ */
+app.post("/study-tool", async (req, reply) => {
+  const auth = req.headers.authorization;
+  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const { kind, courseId, topic, count, k } = (req.body ?? {}) as {
+    kind?: StudyToolKind;
+    courseId?: string;
+    topic?: string;
+    count?: number;
+    k?: number;
+  };
+  if (!courseId || (kind !== "study_guide" && kind !== "practice_problems")) {
+    return reply.code(400).send({ error: "courseId and a valid kind are required" });
+  }
+
+  reply.raw.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+  const send = (e: unknown) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
+
+  try {
+    // Broader retrieval than chat — a guide/practice set should span the topic.
+    const query =
+      topic?.trim() || "key concepts, definitions, formulas, and important exam topics";
+    const chunks = await retrieve(query, courseId, k ?? 15);
+    const mode = classifyMode(chunks[0]?.score);
+    send({
+      type: "mode",
+      mode,
+      topSource: mode === "general" ? undefined : chunks[0]?.fileName,
+    });
+    for await (const token of generateStudyTool(
+      kind,
+      topic ?? "",
+      chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
+      count ?? 5,
+    )) {
+      send({ type: "token", content: token });
+    }
     const seen = new Set<string>();
     for (const c of chunks) {
       if (c.score < CITATION_MIN_SCORE) continue;
