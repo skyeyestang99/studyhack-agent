@@ -43,3 +43,12 @@ python -m eval.run_answer_eval --goldenset eval/data/goldenset.jsonl --limit 10
 Exits non-zero if any metric is below `THRESHOLDS` (CI gate). Makes OpenAI calls per question
 (generate + 2 judges), so run it deliberately / on a capped `--limit`. Seed + ingest materials
 first (see repo root) so there's a corpus to answer from.
+
+## Auto-build golden sets from feedback
+
+Turn 👍'd answers into per-course golden entries, then score them:
+```bash
+python -m eval.build_goldenset_from_feedback --course <uuid> --out eval/data/goldenset_feedback.jsonl
+python -m eval.run_answer_eval --goldenset eval/data/goldenset_feedback.jsonl
+```
+This closes the loop: real usage → feedback → eval set → measured answer quality.
