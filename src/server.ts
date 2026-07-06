@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
-import { generateStudyTool, type StudyToolKind } from "./study.js";
+import { generateStudyTool, generateFlashcards, type StudyToolKind } from "./study.js";
 import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
@@ -25,6 +25,27 @@ function classifyMode(topScore: number | undefined): GroundingMode {
 }
 
 app.get("/health", async () => ({ ok: true }));
+
+/** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
+app.post("/flashcards", async (req, reply) => {
+  const auth = req.headers.authorization;
+  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const { courseId, topic, count } = (req.body ?? {}) as {
+    courseId?: string;
+    topic?: string;
+    count?: number;
+  };
+  if (!courseId) return reply.code(400).send({ error: "courseId is required" });
+  const chunks = await retrieve(topic?.trim() || "key concepts, definitions, and formulas", courseId, 12);
+  const cards = await generateFlashcards(
+    topic ?? "",
+    chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
+    Math.min(Math.max(count ?? 10, 1), 30),
+  );
+  return { cards };
+});
 
 /**
  * Embed a material (or all pending) on demand. Called fire-and-forget by the
