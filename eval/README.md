@@ -25,3 +25,21 @@ seed corpus (#24) → minimal ingest slice (extract→chunk→embed) → **golde
 ## Notes
 - Run against a **Neon branch**, not prod data (isolated, reproducible).
 - Isolation (no cross-course leakage) and no-context (don't hallucinate) are first-class assertions.
+
+
+## Answer-quality eval (Doc 04 extension)
+
+Retrieval eval measures whether we *find* the right chunks. Answer eval measures whether the
+*answer* is trustworthy — the RAG faithfulness/correctness/abstention metrics:
+
+```bash
+python -m eval.run_answer_eval --goldenset eval/data/goldenset.jsonl --limit 10
+```
+
+- **faithfulness** — every factual claim supported by the retrieved context (LLM judge)
+- **correctness** — answer matches the golden `reference_answer` (LLM judge)
+- **abstention** — out-of-material questions get an honest "general" answer, not a confident bluff
+
+Exits non-zero if any metric is below `THRESHOLDS` (CI gate). Makes OpenAI calls per question
+(generate + 2 judges), so run it deliberately / on a capped `--limit`. Seed + ingest materials
+first (see repo root) so there's a corpus to answer from.
