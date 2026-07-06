@@ -3,6 +3,7 @@ import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
 import { generateStudyTool, type StudyToolKind } from "./study.js";
+import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
@@ -78,6 +79,7 @@ app.post("/chat", async (req, reply) => {
   const send = (e: unknown) => reply.raw.write(`data: ${JSON.stringify(e)}\n\n`);
 
   try {
+    let answerText = "";
     const chunks = await retrieve(question, courseId, k ?? 5);
     const mode = classifyMode(chunks[0]?.score);
     send({
@@ -91,7 +93,19 @@ app.post("/chat", async (req, reply) => {
       Array.isArray(history) ? history : [],
       imageDataUrl,
     )) {
+      answerText += token;
       send({ type: "token", content: token });
+    }
+    // Best-effort numeric verification of a checkable math claim (no CAS/Python).
+    // Only surface a badge when a check actually passes.
+    if (looksComputational(answerText)) {
+      const claim = await extractClaim(answerText);
+      if (claim) {
+        const result = verifyClaim(claim);
+        if (result.status === "verified") {
+          send({ type: "verification", status: "verified", detail: result.detail });
+        }
+      }
     }
     // One citation per distinct source material, only when actually relevant
     // (Doc 05 §4). Off-topic/ungrounded answers therefore cite nothing.
