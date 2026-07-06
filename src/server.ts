@@ -46,11 +46,12 @@ app.post("/chat", async (req, reply) => {
     return reply.code(401).send({ error: "unauthorized" });
   }
 
-  const { question, courseId, k, history } = (req.body ?? {}) as {
+  const { question, courseId, k, history, imageDataUrl } = (req.body ?? {}) as {
     question?: string;
     courseId?: string;
     k?: number;
     history?: HistoryMessage[];
+    imageDataUrl?: string;
   };
   if (!question || !courseId) {
     return reply.code(400).send({ error: "question and courseId are required" });
@@ -69,6 +70,7 @@ app.post("/chat", async (req, reply) => {
       question,
       chunks.map((c) => ({ content: c.content, fileName: c.fileName })),
       Array.isArray(history) ? history : [],
+      imageDataUrl,
     )) {
       send({ type: "token", content: token });
     }
@@ -94,6 +96,23 @@ app.post("/chat", async (req, reply) => {
     reply.raw.end();
   }
 });
+
+// Background embed worker: a DB-backed queue. Periodically ingests pending
+// (and retries failed under the attempt cap) so uploads reliably become
+// searchable even if the fire-and-forget /ingest trigger was missed or failed.
+const INGEST_POLL_MS = Number(process.env.INGEST_POLL_MS ?? 20000);
+let ingestRunning = false;
+setInterval(async () => {
+  if (ingestRunning) return;
+  ingestRunning = true;
+  try {
+    await ingestPending();
+  } catch (err) {
+    app.log.error({ err }, "embed worker poll failed");
+  } finally {
+    ingestRunning = false;
+  }
+}, INGEST_POLL_MS).unref();
 
 app
   .listen({ port: config.port, host: "0.0.0.0" })
