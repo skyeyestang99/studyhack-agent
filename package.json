@@ -8,6 +8,7 @@
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
+    "build": "tsc",
     "ingest": "tsx src/ingest/cli.ts",
     "dev": "tsx watch src/server.ts",
     "start": "node dist/server.js",
