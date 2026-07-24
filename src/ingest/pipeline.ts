@@ -4,6 +4,7 @@ import { getObjectBytes } from "../r2.js";
 import { extract } from "./extract.js";
 import { chunkText } from "./chunk.js";
 import { embedBatch } from "./embed.js";
+import { syncSyllabusEvents } from "./syllabus.js";
 import { config } from "../config.js";
 
 interface MaterialRow {
@@ -11,6 +12,7 @@ interface MaterialRow {
   r2_key: string;
   content_type: string | null;
   file_name: string;
+  material_type: string;
   course_id: string | null;
   owner_user_id: string;
   scope: string;
@@ -22,7 +24,7 @@ interface MaterialRow {
  */
 export async function ingestMaterial(materialId: string): Promise<{ chunks: number }> {
   const [m] = await query<MaterialRow>(
-    `SELECT id, r2_key, content_type, file_name, course_id, owner_user_id, scope
+    `SELECT id, r2_key, content_type, file_name, material_type, course_id, owner_user_id, scope
      FROM materials WHERE id = $1 AND deleted_at IS NULL`,
     [materialId],
   );
@@ -67,6 +69,19 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
       throw err;
     } finally {
       client.release();
+    }
+    if (m.material_type === "SYLLABUS" && m.course_id) {
+      try {
+        const count = await syncSyllabusEvents({
+          materialId: m.id,
+          userId: m.owner_user_id,
+          courseId: m.course_id,
+          text,
+        });
+        console.log(`extracted ${count} syllabus events from ${m.id}`);
+      } catch (err) {
+        console.error(`failed to extract syllabus events for ${m.id}:`, (err as Error).message);
+      }
     }
     return { chunks: chunks.length };
   } catch (err) {

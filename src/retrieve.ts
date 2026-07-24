@@ -72,3 +72,56 @@ export async function retrieve(
     client.release();
   }
 }
+
+export async function retrieveForStudyGuide(
+  question: string,
+  input: {
+    courseId: string;
+    userId: string;
+    retrievalMode: "personal" | "course";
+    k?: number;
+    minScore?: number;
+  },
+): Promise<RetrievedChunk[]> {
+  const [embedding] = await embedBatch([question]);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    await client.query("SET LOCAL hnsw.iterative_scan = 'relaxed_order'");
+    const res = await client.query<Row>(
+      `SELECT mc.id, mc.material_id, mc.course_id, mc.content, m.file_name, mc.page,
+              mc.embedding <=> $1 AS distance
+       FROM material_chunks mc
+       JOIN materials m ON m.id = mc.material_id
+       WHERE m.deleted_at IS NULL
+         AND m.course_id = $2
+         AND ($3::text = 'course' OR m.owner_user_id = $4)
+       ORDER BY mc.embedding <=> $1
+       LIMIT $5`,
+      [
+        pgvector.toSql(embedding),
+        input.courseId,
+        input.retrievalMode,
+        input.userId,
+        input.k ?? 20,
+      ],
+    );
+    await client.query("COMMIT");
+    return res.rows
+      .map((r) => ({
+        chunkId: r.id,
+        materialId: r.material_id,
+        courseId: r.course_id,
+        content: r.content,
+        fileName: r.file_name,
+        page: r.page ?? undefined,
+        score: 1 - Number(r.distance),
+      }))
+      .filter((chunk) => chunk.score >= (input.minScore ?? 0));
+  } catch (err) {
+    await client.query("ROLLBACK").catch(() => {});
+    throw err;
+  } finally {
+    client.release();
+  }
+}
