@@ -1,3 +1,6 @@
+import { initSentry, Sentry } from "./instrument.js";
+initSentry();
+
 import Fastify from "fastify";
 import { config } from "./config.js";
 import { retrieve } from "./retrieve.js";
@@ -7,6 +10,12 @@ import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
+
+// Report request-scoped errors to Sentry (no-op if SENTRY_DSN unset). Does
+// not change the response — Fastify's default error reply still applies.
+app.addHook("onError", async (_req, _reply, error) => {
+  if (config.sentryDsn) Sentry.captureException(error);
+});
 
 // Only cite a source whose best chunk is actually relevant to the question.
 // Keeps off-topic answers/refusals from showing spurious "sources" (cosine sim).
@@ -233,6 +242,7 @@ setInterval(async () => {
     await ingestPending();
   } catch (err) {
     app.log.error({ err }, "embed worker poll failed");
+    if (config.sentryDsn) Sentry.captureException(err);
   } finally {
     ingestRunning = false;
   }
