@@ -29,4 +29,10 @@ export const config = {
     targetTokens: Number(process.env.CHUNK_TARGET_TOKENS ?? 500),
     overlapTokens: Number(process.env.CHUNK_OVERLAP_TOKENS ?? 50),
   },
+
+  // Error tracking (Sentry). Empty DSN = no-op (e.g. local dev).
+  // appEnv distinguishes production/perf (NODE_ENV is "production" on both
+  // Railway envs); RAILWAY_ENVIRONMENT_NAME is Railway's auto-injected value.
+  sentryDsn: process.env.SENTRY_DSN ?? "",
+  appEnv: process.env.APP_ENV ?? process.env.RAILWAY_ENVIRONMENT_NAME ?? "development",
 } as const;
