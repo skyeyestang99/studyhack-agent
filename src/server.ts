@@ -11,11 +11,12 @@ import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
 const app = Fastify({ logger: true });
 
-// Report request-scoped errors to Sentry (no-op if SENTRY_DSN unset). Does
-// not change the response — Fastify's default error reply still applies.
-app.addHook("onError", async (_req, _reply, error) => {
-  if (config.sentryDsn) Sentry.captureException(error);
-});
+// Official Sentry Fastify error handler (no-op if SENTRY_DSN unset, since
+// Sentry.init was never called). Captures request-scoped errors with full
+// route/method context - richer than a manual onError hook, and pairs with
+// the fastifyIntegration() tracing added in instrument.ts for the
+// request-volume/latency/error dashboard.
+if (config.sentryDsn) Sentry.setupFastifyErrorHandler(app);
 
 // Only cite a source whose best chunk is actually relevant to the question.
 // Keeps off-topic answers/refusals from showing spurious "sources" (cosine sim).
