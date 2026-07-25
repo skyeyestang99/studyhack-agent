@@ -230,10 +230,18 @@ app.post("/study-tool", async (req, reply) => {
   }
 });
 
-// Background embed worker: a DB-backed queue. Periodically ingests pending
-// (and retries failed under the attempt cap) so uploads reliably become
-// searchable even if the fire-and-forget /ingest trigger was missed or failed.
-const INGEST_POLL_MS = Number(process.env.INGEST_POLL_MS ?? 20000);
+// Background embed worker: a DB-backed queue, acting as a SAFETY NET for the
+// fire-and-forget /ingest trigger the backend fires on every upload (see
+// materials.ts) — this only needs to catch the rare missed/failed trigger.
+//
+// IMPORTANT: this poll interval directly drives Neon compute cost. Neon scales
+// a database to zero after ~5 min idle; any poll faster than that keeps the
+// compute permanently "active" and can burn an entire month's free-tier
+// CU-hour budget on an empty queue alone (confirmed root cause of a prod
+// outage 2026-07-25 — polling every 20s never let compute idle, exhausting
+// the monthly quota days into the billing cycle). Default is deliberately
+// slower than the idle timeout so compute can scale to zero between checks.
+const INGEST_POLL_MS = Number(process.env.INGEST_POLL_MS ?? 600_000); // 10 min
 let ingestRunning = false;
 setInterval(async () => {
   if (ingestRunning) return;
