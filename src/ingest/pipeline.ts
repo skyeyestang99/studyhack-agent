@@ -72,13 +72,15 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
     }
     if (m.material_type === "SYLLABUS" && m.course_id) {
       try {
-        const count = await syncSyllabusEvents({
+        const result = await syncSyllabusEvents({
           materialId: m.id,
           userId: m.owner_user_id,
           courseId: m.course_id,
           text,
         });
-        console.log(`extracted ${count} syllabus events from ${m.id}`);
+        console.log(
+          `extracted ${result.accepted} syllabus events from ${m.id}; rejected ${result.rejected}`,
+        );
       } catch (err) {
         console.error(`failed to extract syllabus events for ${m.id}:`, (err as Error).message);
       }
