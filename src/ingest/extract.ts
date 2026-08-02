@@ -1,6 +1,25 @@
-import { extractText, getDocumentProxy } from "unpdf";
+import { extractText, getDocumentProxy, resolvePDFJSImports } from "unpdf";
 import { parseOfficeAsync } from "officeparser";
 import { ocrPdf } from "./ocr.js";
+
+/**
+ * Force unpdf to use its OWN bundled pdfjs build.
+ *
+ * Without this, unpdf auto-detects the `pdfjs-dist` that `pdf-to-img` (used by
+ * the OCR fallback) hoists into node_modules root, and pairs that API with
+ * unpdf's bundled worker. When the two versions drift, every PDF extraction
+ * fails with:
+ *   The API version "4.2.67" does not match the Worker version "4.3.136".
+ *
+ * This silently broke ALL PDF ingestion (2026-08) after a floating `^unpdf`
+ * bump changed the bundled pdfjs version. Pinning either package is fragile
+ * because both float independently; resolving explicitly is version-proof.
+ */
+let pdfjsReady: Promise<void> | undefined;
+function ensurePdfjs(): Promise<void> {
+  pdfjsReady ??= resolvePDFJSImports(() => import("unpdf/pdfjs"), { force: true });
+  return pdfjsReady;
+}
 
 export interface Extracted {
   text: string;
@@ -21,6 +40,7 @@ export async function extract(
   const isPdf = contentType.includes("pdf") || name.endsWith(".pdf");
 
   if (isPdf) {
+    await ensurePdfjs();
     const pdfDoc = await getDocumentProxy(new Uint8Array(bytes));
     // mergePages:false → per-page array, so chunks can carry their page number.
     const { text, totalPages } = await extractText(pdfDoc, { mergePages: false });

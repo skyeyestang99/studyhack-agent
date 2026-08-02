@@ -1,4 +1,4 @@
-import { pdf } from "pdf-to-img";
+import { getDocumentProxy, renderPageAsImage } from "unpdf";
 import OpenAI from "openai";
 import { config } from "../config.js";
 
@@ -12,19 +12,31 @@ const OCR_PROMPT =
   "lists, and any mathematics (use LaTeX with $…$ / $$…$$ for formulas). " +
   "Output only the transcription — no commentary.";
 
+// @napi-rs/canvas ships prebuilt binaries (no system deps). unpdf renders into it.
+const canvasFactory = () => import("@napi-rs/canvas");
+
 /**
- * OCR a scanned/image PDF: rasterize each page to a PNG (pdf-to-img →
- * @napi-rs/canvas, prebuilt binaries — no system deps) and transcribe it with a
- * vision model. Used as the fallback when a PDF has no extractable text layer.
+ * OCR a scanned/image PDF: rasterize each page to a PNG and transcribe it with
+ * a vision model. Used as the fallback when a PDF has no extractable text layer.
+ *
+ * Rasterization goes through unpdf's `renderPageAsImage` rather than
+ * `pdf-to-img` on purpose. `pdf-to-img` bundles its own `pdfjs-dist`, and
+ * loading two pdfjs versions in one process breaks BOTH paths with
+ *   The API version "x" does not match the Worker version "y".
+ * because pdfjs registers a process-global worker. Using unpdf for extraction
+ * AND rasterization keeps exactly one pdfjs in play.
  */
 export async function ocrPdf(bytes: Buffer): Promise<string> {
-  const document = await pdf(bytes, { scale: 2 });
+  const doc = await getDocumentProxy(new Uint8Array(bytes));
+  const pageCount = Math.min(doc.numPages, OCR_MAX_PAGES);
   const pages: string[] = [];
-  let n = 0;
-  for await (const image of document) {
-    if (n >= OCR_MAX_PAGES) break;
-    n++;
-    const dataUrl = `data:image/png;base64,${image.toString("base64")}`;
+
+  for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
+    const png = await renderPageAsImage(doc, pageNumber, {
+      scale: 2,
+      canvas: canvasFactory,
+    });
+    const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
     const res = await client.chat.completions.create({
       model: config.chatModel,
       messages: [
@@ -40,5 +52,6 @@ export async function ocrPdf(bytes: Buffer): Promise<string> {
     const text = res.choices[0]?.message?.content?.trim();
     if (text) pages.push(text);
   }
+
   return pages.join("\n\n");
 }
