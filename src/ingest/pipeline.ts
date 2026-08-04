@@ -30,7 +30,14 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
   );
   if (!m) throw new Error(`material ${materialId} not found`);
 
-  await query("UPDATE materials SET embedding_status='processing' WHERE id=$1", [m.id]);
+  await query(
+    `UPDATE materials
+       SET embedding_status='processing',
+           embedding_error=NULL,
+           last_attempted_at=now()
+     WHERE id=$1`,
+    [m.id],
+  );
   try {
     const bytes = await getObjectBytes(m.r2_key);
     const { text, pageTexts } = await extract(bytes, m.content_type ?? "", m.file_name);
@@ -59,7 +66,12 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
         );
       }
       await client.query(
-        `UPDATE materials SET embedding_status='done', chunk_count=$2, content_text=$3, processed_at=now()
+        `UPDATE materials
+            SET embedding_status='done',
+                chunk_count=$2,
+                content_text=$3,
+                processed_at=now(),
+                embedding_error=NULL
          WHERE id=$1`,
         [m.id, chunks.length, text],
       );
@@ -87,9 +99,15 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
     }
     return { chunks: chunks.length };
   } catch (err) {
+    const message = err instanceof Error ? err.message : "material ingest failed";
     await query(
-      "UPDATE materials SET embedding_status='failed', embedding_attempts=embedding_attempts+1 WHERE id=$1",
-      [m.id],
+      `UPDATE materials
+          SET embedding_status='failed',
+              embedding_attempts=embedding_attempts+1,
+              embedding_error=$2,
+              last_attempted_at=now()
+        WHERE id=$1`,
+      [m.id, message.slice(0, 4000)],
     );
     throw err;
   }
