@@ -67,7 +67,8 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
       }
       await client.query(
         `UPDATE materials
-            SET embedding_status='done',
+            SET status='READY',
+                embedding_status='done',
                 chunk_count=$2,
                 content_text=$3,
                 processed_at=now(),
@@ -102,7 +103,8 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
     const message = err instanceof Error ? err.message : "material ingest failed";
     await query(
       `UPDATE materials
-          SET embedding_status='failed',
+          SET status='FAILED',
+              embedding_status='failed',
               embedding_attempts=embedding_attempts+1,
               embedding_error=$2,
               last_attempted_at=now()

@@ -63,6 +63,17 @@ function toStudyGuideSources(chunks: Awaited<ReturnType<typeof retrieveForStudyG
     }));
 }
 
+let ingestQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
+  const run = ingestQueue.catch(() => undefined).then(task);
+  ingestQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
 app.post("/flashcards", async (req, reply) => {
   const authError = checkInternalAuth(req, reply);
@@ -154,10 +165,10 @@ app.post("/ingest", async (req, reply) => {
   const { materialId } = (req.body ?? {}) as { materialId?: string };
   try {
     if (materialId) {
-      const { chunks } = await ingestMaterial(materialId);
+      const { chunks } = await enqueueIngest(() => ingestMaterial(materialId));
       return { ok: true, chunks };
     }
-    await ingestPending();
+    await enqueueIngest(() => ingestPending());
     return { ok: true };
   } catch (err) {
     return reply.code(500).send({ error: err instanceof Error ? err.message : "ingest failed" });
@@ -320,7 +331,7 @@ setInterval(async () => {
   if (ingestRunning) return;
   ingestRunning = true;
   try {
-    await ingestPending();
+    await enqueueIngest(() => ingestPending());
   } catch (err) {
     app.log.error({ err }, "embed worker poll failed");
     if (config.sentryDsn) Sentry.captureException(err);
