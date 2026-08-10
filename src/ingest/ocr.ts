@@ -17,7 +17,15 @@ const OCR_PROMPT =
   "Output only the transcription — no commentary.";
 
 // @napi-rs/canvas ships prebuilt binaries (no system deps). unpdf renders into it.
-const canvasResolver = () => import("@napi-rs/canvas");
+/**
+ * Cast is deliberate and lives here rather than at each call site. unpdf types
+ * this resolver against the `canvas` (node-canvas) package, but we supply
+ * `@napi-rs/canvas` — API-compatible for createCanvas, different module type.
+ * The resolved type is also environment-dependent: when `canvas` is absent the
+ * annotation collapses to a self-referential shape, so identical code
+ * typechecked locally and failed in CI where `canvas` types were present.
+ */
+const canvasResolver = (() => import("@napi-rs/canvas")) as unknown as never;
 
 /**
  * OCR a scanned/image PDF: rasterize each page to a PNG and transcribe it with
@@ -40,7 +48,7 @@ export async function ocrPdf(bytes: Buffer): Promise<string> {
   // self-references the parameter rather than the @napi-rs/canvas module — an
   // upstream typing bug, so the resolver has to be cast through.
   const canvasFactory = await createIsomorphicCanvasFactory(
-    canvasResolver as unknown as Parameters<typeof createIsomorphicCanvasFactory>[0],
+    canvasResolver,
   );
   const doc = await getDocumentProxy(new Uint8Array(bytes), {
     // pdfjs option name; unpdf passes it straight through to getDocument.
@@ -53,7 +61,7 @@ export async function ocrPdf(bytes: Buffer): Promise<string> {
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
     const png = await renderPageAsImage(doc, pageNumber, {
       scale: 2,
-      canvas: canvasResolver as unknown as Parameters<typeof createIsomorphicCanvasFactory>[0],
+      canvas: canvasResolver,
     });
     const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
     const res = await client.chat.completions.create({
