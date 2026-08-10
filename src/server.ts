@@ -3,9 +3,15 @@ initSentry();
 
 import Fastify from "fastify";
 import { config } from "./config.js";
-import { retrieve } from "./retrieve.js";
+import { retrieve, retrieveForStudyGuide } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
-import { generateStudyTool, generateFlashcards, type StudyToolKind } from "./study.js";
+import {
+  generateStudyTool,
+  generateFlashcards,
+  generateStructuredStudyGuide,
+  reviseStructuredStudyGuide,
+  type StudyToolKind,
+} from "./study.js";
 import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
@@ -36,12 +42,32 @@ function classifyMode(topScore: number | undefined): GroundingMode {
 
 app.get("/health", async () => ({ ok: true }));
 
-/** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
-app.post("/flashcards", async (req, reply) => {
+function checkInternalAuth(req: { headers: { authorization?: string } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   const auth = req.headers.authorization;
   if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
     return reply.code(401).send({ error: "unauthorized" });
   }
+  return null;
+}
+
+function toStudyGuideSources(chunks: Awaited<ReturnType<typeof retrieveForStudyGuide>>) {
+  return chunks
+    .filter((chunk) => chunk.score >= CITATION_MIN_SCORE)
+    .map((chunk, index) => ({
+      ref: `S${index + 1}`,
+      materialId: chunk.materialId,
+      page: chunk.page,
+      snippet: chunk.content.slice(0, 1200),
+      score: chunk.score,
+      content: chunk.content,
+      fileName: chunk.fileName,
+    }));
+}
+
+/** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
+app.post("/flashcards", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { courseId, topic, count } = (req.body ?? {}) as {
     courseId?: string;
     topic?: string;
@@ -55,6 +81,67 @@ app.post("/flashcards", async (req, reply) => {
     Math.min(Math.max(count ?? 10, 1), 30),
   );
   return { cards };
+});
+
+app.post("/study-guide/generate", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
+  const { userId, courseId, target, retrievalMode } = (req.body ?? {}) as {
+    userId?: string;
+    courseId?: string;
+    target?: string;
+    retrievalMode?: "personal" | "course";
+  };
+  if (!userId || !courseId || !target || (retrievalMode !== "personal" && retrievalMode !== "course")) {
+    return reply.code(400).send({ error: "userId, courseId, target, and retrievalMode are required" });
+  }
+  const chunks = await retrieveForStudyGuide(target, {
+    userId,
+    courseId,
+    retrievalMode,
+    k: 20,
+    minScore: CITATION_MIN_SCORE,
+  });
+  const sources = toStudyGuideSources(chunks);
+  return generateStructuredStudyGuide({ target, retrievalMode }, sources);
+});
+
+app.post("/study-guide/revise", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
+  const { userId, courseId, retrievalMode, instruction, concepts } = (req.body ?? {}) as {
+    userId?: string;
+    courseId?: string;
+    retrievalMode?: "personal" | "course";
+    instruction?: string;
+    concepts?: {
+      logicalConceptId: string;
+      title: string;
+      category?: string;
+      summary: string;
+      keyPoints: string[];
+    }[];
+  };
+  if (
+    !userId ||
+    !courseId ||
+    (retrievalMode !== "personal" && retrievalMode !== "course") ||
+    !instruction ||
+    !Array.isArray(concepts) ||
+    concepts.length === 0
+  ) {
+    return reply.code(400).send({ error: "userId, courseId, retrievalMode, instruction, and concepts are required" });
+  }
+  const query = `${instruction}\n${concepts.map((concept) => `${concept.title}\n${concept.summary}`).join("\n")}`;
+  const chunks = await retrieveForStudyGuide(query, {
+    userId,
+    courseId,
+    retrievalMode,
+    k: 20,
+    minScore: CITATION_MIN_SCORE,
+  });
+  const sources = toStudyGuideSources(chunks);
+  return reviseStructuredStudyGuide({ instruction, concepts }, sources);
 });
 
 /**
@@ -87,10 +174,8 @@ function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
 }
 
 app.post("/ingest", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { materialId } = (req.body ?? {}) as { materialId?: string };
   try {
     if (materialId) {
@@ -110,10 +195,8 @@ app.post("/ingest", async (req, reply) => {
  * Auth: shared-secret Bearer (INTERNAL_JWT_SECRET) — internal JWT is the prod upgrade.
  */
 app.post("/chat", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
 
   const { question, courseId, k, history, imageDataUrl } = (req.body ?? {}) as {
     question?: string;
@@ -192,10 +275,8 @@ app.post("/chat", async (req, reply) => {
  * course-scoped retrieval + citation-relevance gate as /chat.
  */
 app.post("/study-tool", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { kind, courseId, topic, count, k } = (req.body ?? {}) as {
     kind?: StudyToolKind;
     courseId?: string;
