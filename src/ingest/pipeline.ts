@@ -57,7 +57,12 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
         );
       }
       await client.query(
-        `UPDATE materials SET embedding_status='done', chunk_count=$2, content_text=$3, processed_at=now()
+        `UPDATE materials
+            SET status='READY',
+                embedding_status='done',
+                chunk_count=$2,
+                content_text=$3,
+                processed_at=now()
          WHERE id=$1`,
         [m.id, chunks.length, text],
       );
@@ -70,8 +75,17 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
     }
     return { chunks: chunks.length };
   } catch (err) {
+    // Keep `status` in lockstep with `embedding_status` — they diverged before,
+    // leaving materials that looked READY to the UI but had no usable chunks
+    // (beta list C2). Deliberately does NOT touch embedding_error /
+    // last_attempted_at: those columns are added by a migration that lives on
+    // the Discovery branch and do not exist on main yet.
     await query(
-      "UPDATE materials SET embedding_status='failed', embedding_attempts=embedding_attempts+1 WHERE id=$1",
+      `UPDATE materials
+          SET status='FAILED',
+              embedding_status='failed',
+              embedding_attempts=embedding_attempts+1
+        WHERE id=$1`,
       [m.id],
     );
     throw err;
@@ -80,8 +94,12 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
 
 const MAX_EMBED_ATTEMPTS = 3;
 
-/** Ingest all materials still pending embedding (or failed under the retry cap). */
-export async function ingestPending(limit = 50): Promise<void> {
+/**
+ * Ingest all materials still pending embedding (or failed under the retry cap).
+ * Returns the number of materials claimed this pass so the caller can decide
+ * whether to poll again promptly (queue had work) or back off (queue empty).
+ */
+export async function ingestPending(limit = 50): Promise<number> {
   const rows = await query<{ id: string }>(
     `SELECT id FROM materials
        WHERE deleted_at IS NULL
@@ -98,4 +116,5 @@ export async function ingestPending(limit = 50): Promise<void> {
       console.error(`failed ${r.id}:`, (err as Error).message);
     }
   }
+  return rows.length;
 }
