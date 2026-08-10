@@ -22,3 +22,6 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm run build   # same command Railway runs; catches build-time breaks
+      # Inside this job on purpose: 'typecheck + build' is the branch-protection
+      # required check, so tests are enforced rather than merely available.
+      - run: npm test

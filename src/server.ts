@@ -3,6 +3,7 @@ initSentry();
 
 import Fastify from "fastify";
 import { config } from "./config.js";
+import { decideInternalAuth } from "./internal-auth.js";
 import { retrieve, retrieveForStudyGuide } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
 import {
@@ -43,12 +44,20 @@ function classifyMode(topScore: number | undefined): GroundingMode {
 
 app.get("/health", async () => ({ ok: true }));
 
-function checkInternalAuth(req: { headers: { authorization?: string } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
+/**
+ * Guard for every internal endpoint. Fails CLOSED — see internal-auth.ts for why
+ * that matters and what the previous behaviour was.
+ */
+function checkInternalAuth(
+  req: { headers: { authorization?: string } },
+  reply: { code: (status: number) => { send: (body: unknown) => unknown } },
+) {
+  const decision = decideInternalAuth(req.headers.authorization, config.internalSecret);
+  if (decision.ok) return null;
+  if (decision.status === 503) {
+    console.error("SECURITY: INTERNAL_JWT_SECRET is not set — refusing request");
   }
-  return null;
+  return reply.code(decision.status).send(decision.body);
 }
 
 function toStudyGuideSources(chunks: Awaited<ReturnType<typeof retrieveForStudyGuide>>) {
@@ -180,10 +189,8 @@ function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
  * other internal endpoints.
  */
 app.post("/exam-insights", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { courseId } = (req.body ?? {}) as { courseId?: string };
   if (!courseId) return reply.code(400).send({ error: "courseId is required" });
   try {
@@ -411,6 +418,25 @@ async function ingestTick(): Promise<void> {
 
 ingestTimer = setTimeout(() => void ingestTick(), INGEST_IDLE_MIN_MS);
 ingestTimer.unref();
+
+/**
+ * Refuse to boot a deployed instance with no internal secret.
+ *
+ * The per-request guard already fails closed, but a 503-on-every-request agent
+ * is a confusing way to discover a missing env var: the backend surfaces it as a
+ * vague upstream failure. Dying at startup makes it a deploy failure with an
+ * unambiguous log line instead.
+ *
+ * Local development is exempt so the agent still runs from a bare checkout.
+ */
+const isDeployed = config.appEnv === "production" || config.appEnv === "perf";
+if (isDeployed && !config.internalSecret) {
+  console.error(
+    `FATAL: INTERNAL_JWT_SECRET is required in ${config.appEnv}. ` +
+      "Every internal endpoint would refuse traffic. Set it and redeploy.",
+  );
+  process.exit(1);
+}
 
 app
   .listen({ port: config.port, host: "0.0.0.0" })
