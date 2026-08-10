@@ -1,4 +1,8 @@
-import { getDocumentProxy, renderPageAsImage } from "unpdf";
+import {
+  createIsomorphicCanvasFactory,
+  getDocumentProxy,
+  renderPageAsImage,
+} from "unpdf";
 import OpenAI from "openai";
 import { config } from "../config.js";
 
@@ -13,28 +17,43 @@ const OCR_PROMPT =
   "Output only the transcription — no commentary.";
 
 // @napi-rs/canvas ships prebuilt binaries (no system deps). unpdf renders into it.
-const canvasFactory = () => import("@napi-rs/canvas");
+const canvasResolver = () => import("@napi-rs/canvas");
 
 /**
  * OCR a scanned/image PDF: rasterize each page to a PNG and transcribe it with
  * a vision model. Used as the fallback when a PDF has no extractable text layer.
  *
- * Rasterization goes through unpdf's `renderPageAsImage` rather than
- * `pdf-to-img` on purpose. `pdf-to-img` bundles its own `pdfjs-dist`, and
- * loading two pdfjs versions in one process breaks BOTH paths with
- *   The API version "x" does not match the Worker version "y".
- * because pdfjs registers a process-global worker. Using unpdf for extraction
- * AND rasterization keeps exactly one pdfjs in play.
+ * Rasterization goes through unpdf rather than `pdf-to-img` on purpose:
+ * `pdf-to-img` bundles its own `pdfjs-dist`, and two pdfjs versions in one
+ * process break BOTH paths (pdfjs registers a process-global worker).
+ *
+ * The canvas factory must be attached to the DOCUMENT, not just passed to
+ * renderPageAsImage. unpdf only wires its factory in when it constructs the
+ * document itself:
+ *   const pdf = isPDFDocumentProxy(data) ? data : await getDocumentProxy(data, { canvasFactory })
+ * so handing it a proxy we built ourselves leaves pdfjs's default, canvas-less
+ * factory in place and every render fails with
+ * `Cannot read properties of undefined (reading 'createCanvas')`.
  */
 export async function ocrPdf(bytes: Buffer): Promise<string> {
-  const doc = await getDocumentProxy(new Uint8Array(bytes));
+  // unpdf types this param as `() => Promise<typeof canvas>`, where `canvas`
+  // self-references the parameter rather than the @napi-rs/canvas module — an
+  // upstream typing bug, so the resolver has to be cast through.
+  const canvasFactory = await createIsomorphicCanvasFactory(
+    canvasResolver as unknown as Parameters<typeof createIsomorphicCanvasFactory>[0],
+  );
+  const doc = await getDocumentProxy(new Uint8Array(bytes), {
+    // pdfjs option name; unpdf passes it straight through to getDocument.
+    canvasFactory,
+  } as Parameters<typeof getDocumentProxy>[1]);
+
   const pageCount = Math.min(doc.numPages, OCR_MAX_PAGES);
   const pages: string[] = [];
 
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
     const png = await renderPageAsImage(doc, pageNumber, {
       scale: 2,
-      canvas: canvasFactory,
+      canvas: canvasResolver as unknown as Parameters<typeof createIsomorphicCanvasFactory>[0],
     });
     const dataUrl = `data:image/png;base64,${Buffer.from(png).toString("base64")}`;
     const res = await client.chat.completions.create({

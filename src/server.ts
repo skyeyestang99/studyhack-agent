@@ -62,6 +62,30 @@ app.post("/flashcards", async (req, reply) => {
  * backend right after upload so the "upload → get help" journey works without
  * a manual `npm run ingest`. Auth: shared-secret Bearer (INTERNAL_JWT_SECRET).
  */
+/**
+ * Serialize all ingest work within this process. `/ingest` (fire-and-forget from
+ * the backend on upload) and the background poller can otherwise run
+ * concurrently and double-process the same material — double-charging OpenAI
+ * embeddings and over-incrementing embedding_attempts. Observed live: materials
+ * reached embedding_attempts=4 despite a `< 3` retry gate, only reachable via
+ * concurrent double-processing.
+ *
+ * NOTE: in-process only. This does NOT protect against two agent instances
+ * racing, because ingestPending() still has no DB-level claim (no
+ * FOR UPDATE SKIP LOCKED / lease, unlike the study-guide worker). Scaling the
+ * agent past one instance requires adding that claim first.
+ */
+let ingestQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
+  const run = ingestQueue.catch(() => undefined).then(task);
+  ingestQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 app.post("/ingest", async (req, reply) => {
   const auth = req.headers.authorization;
   if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
@@ -70,10 +94,10 @@ app.post("/ingest", async (req, reply) => {
   const { materialId } = (req.body ?? {}) as { materialId?: string };
   try {
     if (materialId) {
-      const { chunks } = await ingestMaterial(materialId);
+      const { chunks } = await enqueueIngest(() => ingestMaterial(materialId));
       return { ok: true, chunks };
     }
-    await ingestPending();
+    await enqueueIngest(() => ingestPending());
     return { ok: true };
   } catch (err) {
     return reply.code(500).send({ error: err instanceof Error ? err.message : "ingest failed" });
@@ -262,7 +286,7 @@ let ingestTimer: NodeJS.Timeout | undefined;
 
 async function ingestTick(): Promise<void> {
   try {
-    const claimed = await ingestPending();
+    const claimed = await enqueueIngest(() => ingestPending());
     if (claimed > 0) {
       // There was work; there may be more queued behind it.
       ingestDelay = INGEST_ACTIVE_MS;

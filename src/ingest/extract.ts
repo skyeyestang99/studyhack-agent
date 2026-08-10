@@ -28,6 +28,22 @@ export interface Extracted {
 }
 
 /**
+ * Strip characters Postgres `text` columns reject and that carry no meaning for
+ * retrieval. NUL (0x00) is the important one: real PDFs contain it in their text
+ * layer, and inserting it fails the whole ingest with
+ *   invalid byte sequence for encoding "UTF8": 0x00
+ * Observed on real course PDFs (2026-08-09). Also drops lone surrogates, which
+ * break both Postgres and the embeddings API.
+ */
+function sanitizeText(text: string): string {
+  return text
+    // eslint-disable-next-line no-control-regex
+    .replace(/\u0000/g, "")
+    .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/g, "")
+    .replace(/(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g, "$1");
+}
+
+/**
  * Extract plain text from a file by content type: PDF (with OCR fallback for
  * scanned/image PDFs), Office (docx/pptx), and plain text.
  */
@@ -44,25 +60,25 @@ export async function extract(
     const pdfDoc = await getDocumentProxy(new Uint8Array(bytes));
     // mergePages:false → per-page array, so chunks can carry their page number.
     const { text, totalPages } = await extractText(pdfDoc, { mergePages: false });
-    const pageTexts = Array.isArray(text) ? text : [text];
+    const pageTexts = (Array.isArray(text) ? text : [text]).map(sanitizeText);
     const merged = pageTexts.join("\n");
     // A scanned/photographed PDF has little or no text layer — OCR it (vision).
     if (merged.trim().length >= Math.max(40, totalPages * 20)) {
       return { text: merged, pages: totalPages, pageTexts };
     }
-    const ocrText = await ocrPdf(bytes);
+    const ocrText = sanitizeText(await ocrPdf(bytes));
     return { text: ocrText || merged, pages: totalPages, pageTexts: [ocrText || merged] };
   }
 
   const isOffice =
     /\.(docx|pptx|xlsx)$/.test(name) || /officedocument/.test(contentType);
   if (isOffice) {
-    const text = (await parseOfficeAsync(bytes)) ?? "";
+    const text = sanitizeText((await parseOfficeAsync(bytes)) ?? "");
     return { text, pages: 1, pageTexts: [text] };
   }
 
   if (/text|csv|markdown|json/.test(contentType) || /\.(txt|csv|md|json)$/.test(name)) {
-    const text = bytes.toString("utf8");
+    const text = sanitizeText(bytes.toString("utf8"));
     return { text, pages: 1, pageTexts: [text] };
   }
 
