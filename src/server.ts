@@ -14,6 +14,7 @@ import {
 } from "./study.js";
 import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
+import { generateExamInsights } from "./exam-insights.js";
 
 const app = Fastify({ logger: true });
 
@@ -172,6 +173,27 @@ function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
   );
   return run;
 }
+
+/**
+ * "What does this professor actually test?" — aggregate emphasis analysis over
+ * the course's own past exams/quizzes/homework. Shared-secret auth like the
+ * other internal endpoints.
+ */
+app.post("/exam-insights", async (req, reply) => {
+  const auth = req.headers.authorization;
+  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
+    return reply.code(401).send({ error: "unauthorized" });
+  }
+  const { courseId } = (req.body ?? {}) as { courseId?: string };
+  if (!courseId) return reply.code(400).send({ error: "courseId is required" });
+  try {
+    return await generateExamInsights(courseId);
+  } catch (err) {
+    return reply
+      .code(500)
+      .send({ error: err instanceof Error ? err.message : "exam insights failed" });
+  }
+});
 
 app.post("/ingest", async (req, reply) => {
   const authError = checkInternalAuth(req, reply);
