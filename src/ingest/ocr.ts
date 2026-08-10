@@ -8,7 +8,11 @@ import { config } from "../config.js";
 
 const client = new OpenAI({ apiKey: config.openaiApiKey });
 
-// Cap pages so a huge scan doesn't run up unbounded vision cost/time.
+// Default page budget. Kept low for bulk material (a lecture scan can be huge
+// and OCR costs one vision call per page), but callers override it — see
+// OCR_MAX_PAGES_BY_TYPE in extract.ts. Exams and homework get a much larger
+// budget: they're the highest-value documents in the corpus, and silently
+// truncating them loses exactly what students came for.
 const OCR_MAX_PAGES = Number(process.env.OCR_MAX_PAGES ?? 15);
 
 const OCR_PROMPT =
@@ -35,6 +39,11 @@ const canvasResolver = (() => import("@napi-rs/canvas")) as unknown as never;
  * `pdf-to-img` bundles its own `pdfjs-dist`, and two pdfjs versions in one
  * process break BOTH paths (pdfjs registers a process-global worker).
  *
+ * Returns text PER PAGE rather than one merged blob. Chunks record the page they
+ * came from and citations offer page-jump, so merging made every chunk from a
+ * scanned document cite page 1 — destroying provenance on exams and homework,
+ * which are the documents most likely to be scanned.
+ *
  * The canvas factory must be attached to the DOCUMENT, not just passed to
  * renderPageAsImage. unpdf only wires its factory in when it constructs the
  * document itself:
@@ -43,7 +52,10 @@ const canvasResolver = (() => import("@napi-rs/canvas")) as unknown as never;
  * factory in place and every render fails with
  * `Cannot read properties of undefined (reading 'createCanvas')`.
  */
-export async function ocrPdf(bytes: Buffer): Promise<string> {
+export async function ocrPdf(
+  bytes: Buffer,
+  options: { maxPages?: number } = {},
+): Promise<string[]> {
   // unpdf types this param as `() => Promise<typeof canvas>`, where `canvas`
   // self-references the parameter rather than the @napi-rs/canvas module — an
   // upstream typing bug, so the resolver has to be cast through.
@@ -55,7 +67,8 @@ export async function ocrPdf(bytes: Buffer): Promise<string> {
     canvasFactory,
   } as Parameters<typeof getDocumentProxy>[1]);
 
-  const pageCount = Math.min(doc.numPages, OCR_MAX_PAGES);
+  const budget = options.maxPages ?? OCR_MAX_PAGES;
+  const pageCount = Math.min(doc.numPages, budget);
   const pages: string[] = [];
 
   for (let pageNumber = 1; pageNumber <= pageCount; pageNumber++) {
@@ -76,9 +89,15 @@ export async function ocrPdf(bytes: Buffer): Promise<string> {
         },
       ],
     });
-    const text = res.choices[0]?.message?.content?.trim();
-    if (text) pages.push(text);
+    // Keep the slot even if a page transcribes empty, so index i === page i+1.
+    pages.push(res.choices[0]?.message?.content?.trim() ?? "");
   }
 
-  return pages.join("\n\n");
+  if (doc.numPages > pageCount) {
+    console.warn(
+      `ocr truncated: ${pageCount}/${doc.numPages} pages transcribed (budget ${budget})`,
+    );
+  }
+
+  return pages;
 }

@@ -33,7 +33,9 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
   await query("UPDATE materials SET embedding_status='processing' WHERE id=$1", [m.id]);
   try {
     const bytes = await getObjectBytes(m.r2_key);
-    const { text, pageTexts } = await extract(bytes, m.content_type ?? "", m.file_name);
+    const { text, pageTexts } = await extract(bytes, m.content_type ?? "", m.file_name, {
+      materialType: m.material_type,
+    });
     const pages = pageTexts && pageTexts.length ? pageTexts : [text];
     const chunks: { content: string; approxTokens: number; page: number }[] = [];
     pages.forEach((pt, pi) => {

@@ -44,6 +44,25 @@ function sanitizeText(text: string): string {
 }
 
 /**
+ * Per-material-type OCR page budgets. EXAM and HOMEWORK are the highest-value
+ * documents in a course — they're what "what does this professor actually test"
+ * is built from — and they're also the most likely to be scanned. A 15-page cap
+ * silently truncated them (2 real exam PDFs yielded only 10 chunks total), so
+ * they get a much larger budget. Bulk lecture scans stay capped because they're
+ * long, numerous, and individually less load-bearing.
+ */
+const OCR_MAX_PAGES_BY_TYPE: Record<string, number> = {
+  EXAM: Number(process.env.OCR_MAX_PAGES_EXAM ?? 60),
+  HOMEWORK: Number(process.env.OCR_MAX_PAGES_HOMEWORK ?? 40),
+  SYLLABUS: Number(process.env.OCR_MAX_PAGES_SYLLABUS ?? 20),
+};
+
+export interface ExtractOptions {
+  /** materials.material_type — drives the OCR page budget. */
+  materialType?: string | null;
+}
+
+/**
  * Extract plain text from a file by content type: PDF (with OCR fallback for
  * scanned/image PDFs), Office (docx/pptx), and plain text.
  */
@@ -51,6 +70,7 @@ export async function extract(
   bytes: Buffer,
   contentType: string,
   fileName: string,
+  options: ExtractOptions = {},
 ): Promise<Extracted> {
   const name = fileName.toLowerCase();
   const isPdf = contentType.includes("pdf") || name.endsWith(".pdf");
@@ -66,8 +86,17 @@ export async function extract(
     if (merged.trim().length >= Math.max(40, totalPages * 20)) {
       return { text: merged, pages: totalPages, pageTexts };
     }
-    const ocrText = sanitizeText(await ocrPdf(bytes));
-    return { text: ocrText || merged, pages: totalPages, pageTexts: [ocrText || merged] };
+    const maxPages = options.materialType
+      ? OCR_MAX_PAGES_BY_TYPE[options.materialType]
+      : undefined;
+    // Keep OCR output per-page so chunks retain real page numbers (citations
+    // offer page-jump; a merged blob made every chunk cite page 1).
+    const ocrPages = (await ocrPdf(bytes, { maxPages })).map(sanitizeText);
+    const ocrMerged = ocrPages.join("\n").trim();
+    if (!ocrMerged) {
+      return { text: merged, pages: totalPages, pageTexts };
+    }
+    return { text: ocrMerged, pages: totalPages, pageTexts: ocrPages };
   }
 
   const isOffice =
