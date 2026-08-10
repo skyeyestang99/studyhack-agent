@@ -240,22 +240,50 @@ app.post("/study-tool", async (req, reply) => {
 // compute permanently "active" and can burn an entire month's free-tier
 // CU-hour budget on an empty queue alone (confirmed root cause of a prod
 // outage 2026-07-25 — polling every 20s never let compute idle, exhausting
-// the monthly quota days into the billing cycle). Default is deliberately
-// slower than the idle timeout so compute can scale to zero between checks.
-const INGEST_POLL_MS = Number(process.env.INGEST_POLL_MS ?? 600_000); // 10 min
-let ingestRunning = false;
-setInterval(async () => {
-  if (ingestRunning) return;
-  ingestRunning = true;
+// the monthly quota days into the billing cycle).
+//
+// A fixed interval is the wrong shape here. At any interval shorter than the
+// database's idle-suspend window, compute never sleeps; at any interval long
+// enough to let it sleep, a missed trigger waits that whole interval. So this
+// backs off adaptively instead:
+//
+//   - work found      -> poll again quickly (drain the queue)
+//   - queue empty     -> double the delay, up to IDLE_MAX
+//
+// The primary ingestion path is the backend's fire-and-forget POST /ingest on
+// upload; this loop is only the safety net for a missed or failed trigger.
+// Idle cost therefore matters far more than idle latency.
+const INGEST_ACTIVE_MS = Number(process.env.INGEST_ACTIVE_POLL_MS ?? 15_000); // draining
+const INGEST_IDLE_MIN_MS = Number(process.env.INGEST_IDLE_MIN_POLL_MS ?? 60_000); // 1 min
+const INGEST_IDLE_MAX_MS = Number(process.env.INGEST_IDLE_MAX_POLL_MS ?? 1_800_000); // 30 min
+
+let ingestDelay = INGEST_IDLE_MIN_MS;
+let ingestTimer: NodeJS.Timeout | undefined;
+
+async function ingestTick(): Promise<void> {
   try {
-    await ingestPending();
+    const claimed = await ingestPending();
+    if (claimed > 0) {
+      // There was work; there may be more queued behind it.
+      ingestDelay = INGEST_ACTIVE_MS;
+    } else {
+      // Empty queue: back off so the DB compute can idle/suspend.
+      ingestDelay = Math.min(Math.max(ingestDelay * 2, INGEST_IDLE_MIN_MS), INGEST_IDLE_MAX_MS);
+    }
   } catch (err) {
     app.log.error({ err }, "embed worker poll failed");
     if (config.sentryDsn) Sentry.captureException(err);
+    // Treat errors like an empty queue so a persistent failure (e.g. the DB
+    // being unreachable) backs off instead of hammering every interval.
+    ingestDelay = Math.min(Math.max(ingestDelay * 2, INGEST_IDLE_MIN_MS), INGEST_IDLE_MAX_MS);
   } finally {
-    ingestRunning = false;
+    ingestTimer = setTimeout(() => void ingestTick(), ingestDelay);
+    ingestTimer.unref();
   }
-}, INGEST_POLL_MS).unref();
+}
+
+ingestTimer = setTimeout(() => void ingestTick(), INGEST_IDLE_MIN_MS);
+ingestTimer.unref();
 
 app
   .listen({ port: config.port, host: "0.0.0.0" })

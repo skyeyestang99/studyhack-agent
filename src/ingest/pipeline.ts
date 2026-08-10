@@ -80,8 +80,12 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
 
 const MAX_EMBED_ATTEMPTS = 3;
 
-/** Ingest all materials still pending embedding (or failed under the retry cap). */
-export async function ingestPending(limit = 50): Promise<void> {
+/**
+ * Ingest all materials still pending embedding (or failed under the retry cap).
+ * Returns the number of materials claimed this pass so the caller can decide
+ * whether to poll again promptly (queue had work) or back off (queue empty).
+ */
+export async function ingestPending(limit = 50): Promise<number> {
   const rows = await query<{ id: string }>(
     `SELECT id FROM materials
        WHERE deleted_at IS NULL
@@ -98,4 +102,5 @@ export async function ingestPending(limit = 50): Promise<void> {
       console.error(`failed ${r.id}:`, (err as Error).message);
     }
   }
+  return rows.length;
 }
