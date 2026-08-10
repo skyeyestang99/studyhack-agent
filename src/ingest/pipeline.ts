@@ -30,7 +30,10 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
   );
   if (!m) throw new Error(`material ${materialId} not found`);
 
-  await query("UPDATE materials SET embedding_status='processing' WHERE id=$1", [m.id]);
+  await query(
+    "UPDATE materials SET embedding_status='processing', last_attempted_at=now() WHERE id=$1",
+    [m.id],
+  );
   try {
     const bytes = await getObjectBytes(m.r2_key);
     const { text, pageTexts } = await extract(bytes, m.content_type ?? "", m.file_name, {
@@ -43,6 +46,17 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
         chunks.push({ content: c.content, approxTokens: c.approxTokens, page: pi + 1 });
       }
     });
+    // Zero chunks means extraction produced nothing usable — an encrypted PDF, a
+    // pure-image scan where OCR also came back empty, or a corrupt upload.
+    // Reporting `done` here is the same failure class as a study guide that
+    // shipped `ready` with no sources: the UI claims the material is searchable
+    // while chat can never cite it. Fail instead, so it retries and surfaces.
+    if (chunks.length === 0) {
+      throw new Error(
+        "extraction produced no text (encrypted, image-only, or corrupt file)",
+      );
+    }
+
     const embeddings = await embedBatch(chunks.map((c) => c.content));
 
     const client = await pool.connect();
@@ -66,7 +80,8 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
                 embedding_status='done',
                 chunk_count=$2,
                 content_text=$3,
-                processed_at=now()
+                processed_at=now(),
+                embedding_error=NULL
          WHERE id=$1`,
         [m.id, chunks.length, text],
       );
@@ -94,16 +109,22 @@ export async function ingestMaterial(materialId: string): Promise<{ chunks: numb
   } catch (err) {
     // Keep `status` in lockstep with `embedding_status` — they diverged before,
     // leaving materials that looked READY to the UI but had no usable chunks
-    // (beta list C2). Deliberately does NOT touch embedding_error /
-    // last_attempted_at: those columns are added by a migration that lives on
-    // the Discovery branch and do not exist on main yet.
+    // (beta list C2).
+    //
+    // embedding_error / last_attempted_at are persisted because without them a
+    // failure is undiagnosable after the fact: prod accumulated 10 failed
+    // materials whose only record was the word "failed", and the logs had long
+    // rotated. The message is truncated because some provider errors embed an
+    // entire request body.
     await query(
       `UPDATE materials
           SET status='FAILED',
               embedding_status='failed',
-              embedding_attempts=embedding_attempts+1
+              embedding_attempts=embedding_attempts+1,
+              embedding_error=left($2, 2000),
+              last_attempted_at=now()
         WHERE id=$1`,
-      [m.id],
+      [m.id, (err as Error).message ?? String(err)],
     );
     throw err;
   }
