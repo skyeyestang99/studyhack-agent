@@ -3,9 +3,15 @@ initSentry();
 
 import Fastify from "fastify";
 import { config } from "./config.js";
-import { retrieve } from "./retrieve.js";
+import { retrieve, retrieveForStudyGuide } from "./retrieve.js";
 import { generate, type HistoryMessage } from "./generate.js";
-import { generateStudyTool, generateFlashcards, type StudyToolKind } from "./study.js";
+import {
+  generateStudyTool,
+  generateFlashcards,
+  generateStructuredStudyGuide,
+  reviseStructuredStudyGuide,
+  type StudyToolKind,
+} from "./study.js";
 import { extractClaim, verifyClaim, looksComputational } from "./verify.js";
 import { ingestMaterial, ingestPending } from "./ingest/pipeline.js";
 
@@ -36,12 +42,32 @@ function classifyMode(topScore: number | undefined): GroundingMode {
 
 app.get("/health", async () => ({ ok: true }));
 
-/** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
-app.post("/flashcards", async (req, reply) => {
+function checkInternalAuth(req: { headers: { authorization?: string } }, reply: { code: (status: number) => { send: (body: unknown) => unknown } }) {
   const auth = req.headers.authorization;
   if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
     return reply.code(401).send({ error: "unauthorized" });
   }
+  return null;
+}
+
+function toStudyGuideSources(chunks: Awaited<ReturnType<typeof retrieveForStudyGuide>>) {
+  return chunks
+    .filter((chunk) => chunk.score >= CITATION_MIN_SCORE)
+    .map((chunk, index) => ({
+      ref: `S${index + 1}`,
+      materialId: chunk.materialId,
+      page: chunk.page,
+      snippet: chunk.content.slice(0, 1200),
+      score: chunk.score,
+      content: chunk.content,
+      fileName: chunk.fileName,
+    }));
+}
+
+/** Generate grounded flashcards (JSON) from course materials. Shared-secret auth. */
+app.post("/flashcards", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { courseId, topic, count } = (req.body ?? {}) as {
     courseId?: string;
     topic?: string;
@@ -57,23 +83,106 @@ app.post("/flashcards", async (req, reply) => {
   return { cards };
 });
 
+app.post("/study-guide/generate", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
+  const { userId, courseId, target, retrievalMode } = (req.body ?? {}) as {
+    userId?: string;
+    courseId?: string;
+    target?: string;
+    retrievalMode?: "personal" | "course";
+  };
+  if (!userId || !courseId || !target || (retrievalMode !== "personal" && retrievalMode !== "course")) {
+    return reply.code(400).send({ error: "userId, courseId, target, and retrievalMode are required" });
+  }
+  const chunks = await retrieveForStudyGuide(target, {
+    userId,
+    courseId,
+    retrievalMode,
+    k: 20,
+    minScore: CITATION_MIN_SCORE,
+  });
+  const sources = toStudyGuideSources(chunks);
+  return generateStructuredStudyGuide({ target, retrievalMode }, sources);
+});
+
+app.post("/study-guide/revise", async (req, reply) => {
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
+  const { userId, courseId, retrievalMode, instruction, concepts } = (req.body ?? {}) as {
+    userId?: string;
+    courseId?: string;
+    retrievalMode?: "personal" | "course";
+    instruction?: string;
+    concepts?: {
+      logicalConceptId: string;
+      title: string;
+      category?: string;
+      summary: string;
+      keyPoints: string[];
+    }[];
+  };
+  if (
+    !userId ||
+    !courseId ||
+    (retrievalMode !== "personal" && retrievalMode !== "course") ||
+    !instruction ||
+    !Array.isArray(concepts) ||
+    concepts.length === 0
+  ) {
+    return reply.code(400).send({ error: "userId, courseId, retrievalMode, instruction, and concepts are required" });
+  }
+  const query = `${instruction}\n${concepts.map((concept) => `${concept.title}\n${concept.summary}`).join("\n")}`;
+  const chunks = await retrieveForStudyGuide(query, {
+    userId,
+    courseId,
+    retrievalMode,
+    k: 20,
+    minScore: CITATION_MIN_SCORE,
+  });
+  const sources = toStudyGuideSources(chunks);
+  return reviseStructuredStudyGuide({ instruction, concepts }, sources);
+});
+
 /**
  * Embed a material (or all pending) on demand. Called fire-and-forget by the
  * backend right after upload so the "upload → get help" journey works without
  * a manual `npm run ingest`. Auth: shared-secret Bearer (INTERNAL_JWT_SECRET).
  */
+/**
+ * Serialize all ingest work within this process. `/ingest` (fire-and-forget from
+ * the backend on upload) and the background poller can otherwise run
+ * concurrently and double-process the same material — double-charging OpenAI
+ * embeddings and over-incrementing embedding_attempts. Observed live: materials
+ * reached embedding_attempts=4 despite a `< 3` retry gate, only reachable via
+ * concurrent double-processing.
+ *
+ * NOTE: in-process only. This does NOT protect against two agent instances
+ * racing, because ingestPending() still has no DB-level claim (no
+ * FOR UPDATE SKIP LOCKED / lease, unlike the study-guide worker). Scaling the
+ * agent past one instance requires adding that claim first.
+ */
+let ingestQueue: Promise<unknown> = Promise.resolve();
+
+function enqueueIngest<T>(task: () => Promise<T>): Promise<T> {
+  const run = ingestQueue.catch(() => undefined).then(task);
+  ingestQueue = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 app.post("/ingest", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { materialId } = (req.body ?? {}) as { materialId?: string };
   try {
     if (materialId) {
-      const { chunks } = await ingestMaterial(materialId);
+      const { chunks } = await enqueueIngest(() => ingestMaterial(materialId));
       return { ok: true, chunks };
     }
-    await ingestPending();
+    await enqueueIngest(() => ingestPending());
     return { ok: true };
   } catch (err) {
     return reply.code(500).send({ error: err instanceof Error ? err.message : "ingest failed" });
@@ -86,10 +195,8 @@ app.post("/ingest", async (req, reply) => {
  * Auth: shared-secret Bearer (INTERNAL_JWT_SECRET) — internal JWT is the prod upgrade.
  */
 app.post("/chat", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
 
   const { question, courseId, k, history, imageDataUrl } = (req.body ?? {}) as {
     question?: string;
@@ -168,10 +275,8 @@ app.post("/chat", async (req, reply) => {
  * course-scoped retrieval + citation-relevance gate as /chat.
  */
 app.post("/study-tool", async (req, reply) => {
-  const auth = req.headers.authorization;
-  if (config.internalSecret && auth !== `Bearer ${config.internalSecret}`) {
-    return reply.code(401).send({ error: "unauthorized" });
-  }
+  const authError = checkInternalAuth(req, reply);
+  if (authError) return authError;
   const { kind, courseId, topic, count, k } = (req.body ?? {}) as {
     kind?: StudyToolKind;
     courseId?: string;
@@ -240,22 +345,50 @@ app.post("/study-tool", async (req, reply) => {
 // compute permanently "active" and can burn an entire month's free-tier
 // CU-hour budget on an empty queue alone (confirmed root cause of a prod
 // outage 2026-07-25 — polling every 20s never let compute idle, exhausting
-// the monthly quota days into the billing cycle). Default is deliberately
-// slower than the idle timeout so compute can scale to zero between checks.
-const INGEST_POLL_MS = Number(process.env.INGEST_POLL_MS ?? 600_000); // 10 min
-let ingestRunning = false;
-setInterval(async () => {
-  if (ingestRunning) return;
-  ingestRunning = true;
+// the monthly quota days into the billing cycle).
+//
+// A fixed interval is the wrong shape here. At any interval shorter than the
+// database's idle-suspend window, compute never sleeps; at any interval long
+// enough to let it sleep, a missed trigger waits that whole interval. So this
+// backs off adaptively instead:
+//
+//   - work found      -> poll again quickly (drain the queue)
+//   - queue empty     -> double the delay, up to IDLE_MAX
+//
+// The primary ingestion path is the backend's fire-and-forget POST /ingest on
+// upload; this loop is only the safety net for a missed or failed trigger.
+// Idle cost therefore matters far more than idle latency.
+const INGEST_ACTIVE_MS = Number(process.env.INGEST_ACTIVE_POLL_MS ?? 15_000); // draining
+const INGEST_IDLE_MIN_MS = Number(process.env.INGEST_IDLE_MIN_POLL_MS ?? 60_000); // 1 min
+const INGEST_IDLE_MAX_MS = Number(process.env.INGEST_IDLE_MAX_POLL_MS ?? 1_800_000); // 30 min
+
+let ingestDelay = INGEST_IDLE_MIN_MS;
+let ingestTimer: NodeJS.Timeout | undefined;
+
+async function ingestTick(): Promise<void> {
   try {
-    await ingestPending();
+    const claimed = await enqueueIngest(() => ingestPending());
+    if (claimed > 0) {
+      // There was work; there may be more queued behind it.
+      ingestDelay = INGEST_ACTIVE_MS;
+    } else {
+      // Empty queue: back off so the DB compute can idle/suspend.
+      ingestDelay = Math.min(Math.max(ingestDelay * 2, INGEST_IDLE_MIN_MS), INGEST_IDLE_MAX_MS);
+    }
   } catch (err) {
     app.log.error({ err }, "embed worker poll failed");
     if (config.sentryDsn) Sentry.captureException(err);
+    // Treat errors like an empty queue so a persistent failure (e.g. the DB
+    // being unreachable) backs off instead of hammering every interval.
+    ingestDelay = Math.min(Math.max(ingestDelay * 2, INGEST_IDLE_MIN_MS), INGEST_IDLE_MAX_MS);
   } finally {
-    ingestRunning = false;
+    ingestTimer = setTimeout(() => void ingestTick(), ingestDelay);
+    ingestTimer.unref();
   }
-}, INGEST_POLL_MS).unref();
+}
+
+ingestTimer = setTimeout(() => void ingestTick(), INGEST_IDLE_MIN_MS);
+ingestTimer.unref();
 
 app
   .listen({ port: config.port, host: "0.0.0.0" })
