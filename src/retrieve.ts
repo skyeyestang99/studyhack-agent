@@ -1,5 +1,5 @@
 import pgvector from "pgvector/pg";
-import { pool } from "./db.js";
+import { pool, query } from "./db.js";
 import { embedBatch } from "./ingest/embed.js";
 
 export interface RetrievedChunk {
@@ -71,6 +71,59 @@ export async function retrieve(
   } finally {
     client.release();
   }
+}
+
+export interface AssessmentChunk {
+  materialId: string;
+  fileName: string;
+  materialType: string;
+  page?: number;
+  content: string;
+}
+
+/**
+ * Fetch ALL assessment material for a course (exams, quizzes, homework), in
+ * document order.
+ *
+ * Deliberately NOT a vector search. "What does this professor actually test" is
+ * an aggregate question over a bounded corpus — every past exam matters equally,
+ * and similarity ranking against a query would both drop material and bias the
+ * result toward whatever phrasing the query used. Assessment material is small
+ * relative to lectures (tens of chunks, not thousands), so reading all of it is
+ * cheap and correct.
+ *
+ * Ordering by (file_name, page, chunk_index) keeps each document's reasoning
+ * contiguous, which matters because a single exam problem often spans chunks.
+ */
+export async function retrieveAssessmentCorpus(
+  courseId: string,
+  options: { limit?: number } = {},
+): Promise<AssessmentChunk[]> {
+  const rows = await query<{
+    material_id: string;
+    file_name: string;
+    material_type: string;
+    page: number | null;
+    content: string;
+  }>(
+    `SELECT mc.material_id, m.file_name, m.material_type, mc.page, mc.content
+     FROM material_chunks mc
+     JOIN materials m ON m.id = mc.material_id
+     WHERE m.deleted_at IS NULL
+       AND m.course_id = $1
+       AND m.material_type IN ('EXAM', 'HOMEWORK')
+       AND m.embedding_status = 'done'
+     ORDER BY m.file_name, mc.page NULLS FIRST, mc.chunk_index
+     LIMIT $2`,
+    [courseId, options.limit ?? 400],
+  );
+  return rows.map((r) => ({
+    materialId: r.material_id,
+    fileName: r.file_name,
+    materialType: r.material_type,
+    page: r.page ?? undefined,
+    content: r.content,
+  }));
 }
 
 export async function retrieveForStudyGuide(
