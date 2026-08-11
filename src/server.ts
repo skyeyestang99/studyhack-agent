@@ -234,8 +234,8 @@ app.post("/chat", async (req, reply) => {
     history?: HistoryMessage[];
     imageDataUrl?: string;
   };
-  if (!question || !courseId) {
-    return reply.code(400).send({ error: "question and courseId are required" });
+  if (!question) {
+    return reply.code(400).send({ error: "question is required" });
   }
 
   reply.raw.writeHead(200, {
@@ -247,7 +247,14 @@ app.post("/chat", async (req, reply) => {
 
   try {
     let answerText = "";
-    const chunks = await retrieve(question, courseId, k ?? 5);
+    // courseId is optional so a student can get help before doing any setup.
+    // Without one there is nothing to retrieve from, which classifyMode already
+    // reports as "general" — the answer is unsourced and the UI says so. This is
+    // the acquisition path: signing up, picking a school, finding a professor and
+    // creating a course before asking one question is more friction than a
+    // general-purpose chatbot, so the course-scoped value has to come AFTER the
+    // student has already been helped once.
+    const chunks = courseId ? await retrieve(question, courseId, k ?? 5) : [];
     const mode = classifyMode(chunks[0]?.score);
     send({
       type: "mode",
