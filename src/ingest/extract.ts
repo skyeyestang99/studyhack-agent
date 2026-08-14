@@ -52,11 +52,17 @@ function sanitizeText(text: string): string {
  * long, numerous, and individually less load-bearing.
  */
 const OCR_MAX_PAGES_BY_TYPE: Record<string, number> = {
+  // Assessments earn the largest budget: they are the scarcest and highest-value
+  // documents in the corpus, and silently truncating one is how Exam Insights ends up
+  // analysing half a midterm. QUIZ and SOLUTIONS were added with the taxonomy in
+  // migration 0026 — previously a quiz filed as EXAM got 60 pages and one filed as
+  // NOTES got the 15-page default, purely by how the uploader labelled it.
   EXAM: Number(process.env.OCR_MAX_PAGES_EXAM ?? 60),
+  QUIZ: Number(process.env.OCR_MAX_PAGES_QUIZ ?? 60),
+  SOLUTIONS: Number(process.env.OCR_MAX_PAGES_SOLUTIONS ?? 60),
   HOMEWORK: Number(process.env.OCR_MAX_PAGES_HOMEWORK ?? 40),
   SYLLABUS: Number(process.env.OCR_MAX_PAGES_SYLLABUS ?? 20),
 };
-
 export interface ExtractOptions {
   /** materials.material_type — drives the OCR page budget. */
   materialType?: string | null;

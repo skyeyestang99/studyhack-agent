@@ -95,6 +95,21 @@ export interface AssessmentChunk {
  * Ordering by (file_name, page, chunk_index) keeps each document's reasoning
  * contiguous, which matters because a single exam problem often spans chunks.
  */
+/**
+ * Types that count as assessment material for Exam Insights.
+ *
+ * ⚠️ MUST MATCH the backend's ASSESSMENT_TYPES in
+ * studyhack-backend/src/lib/material-types.ts.
+ *
+ * Separate repositories, so this cannot be shared as code — and the two uses are
+ * asymmetric in a way that hides disagreement. The backend computes the insights CACHE
+ * FINGERPRINT from its list; this list selects the corpus actually analysed. If they
+ * drift, nothing throws: insights either go stale (material is analysed but does not move
+ * the fingerprint) or recompute for nothing (the fingerprint moves for material that is
+ * never analysed).
+ */
+export const ASSESSMENT_TYPES = ["EXAM", "QUIZ", "HOMEWORK", "SOLUTIONS"] as const;
+
 export async function retrieveAssessmentCorpus(
   courseId: string,
   options: { limit?: number } = {},
@@ -111,11 +126,11 @@ export async function retrieveAssessmentCorpus(
      JOIN materials m ON m.id = mc.material_id
      WHERE m.deleted_at IS NULL
        AND m.course_id = $1
-       AND m.material_type IN ('EXAM', 'HOMEWORK')
+       AND m.material_type = ANY($2::text[])
        AND m.embedding_status = 'done'
      ORDER BY m.file_name, mc.page NULLS FIRST, mc.chunk_index
-     LIMIT $2`,
-    [courseId, options.limit ?? 400],
+     LIMIT $3`,
+    [courseId, [...ASSESSMENT_TYPES], options.limit ?? 400],
   );
   return rows.map((r) => ({
     materialId: r.material_id,
