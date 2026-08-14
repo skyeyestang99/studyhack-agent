@@ -62,7 +62,7 @@ async function seedChunk(opts: {
       materialId,
       OWNER,
       opts.courseId,
-      opts.materialType ?? "NOTES",
+      opts.materialType ?? "LECTURE_NOTES",
       opts.fileName,
       `eval/${materialId}.pdf`,
       randomUUID().replace(/-/g, ""),
