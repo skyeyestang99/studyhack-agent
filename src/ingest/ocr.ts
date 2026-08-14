@@ -5,6 +5,7 @@ import {
 } from "unpdf";
 import OpenAI from "openai";
 import { config } from "../config.js";
+import { OCR_PROMPT } from "../prompts.js";
 
 const client = new OpenAI({ apiKey: config.openaiApiKey });
 
@@ -15,10 +16,6 @@ const client = new OpenAI({ apiKey: config.openaiApiKey });
 // truncating them loses exactly what students came for.
 const OCR_MAX_PAGES = Number(process.env.OCR_MAX_PAGES ?? 15);
 
-const OCR_PROMPT =
-  "Transcribe ALL text from this page exactly as written, preserving structure, " +
-  "lists, and any mathematics (use LaTeX with $…$ / $$…$$ for formulas). " +
-  "Output only the transcription — no commentary.";
 
 // @napi-rs/canvas ships prebuilt binaries (no system deps). unpdf renders into it.
 /**
