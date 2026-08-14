@@ -24,4 +24,11 @@ jobs:
       - run: npm run build   # same command Railway runs; catches build-time breaks
       # Inside this job on purpose: 'typecheck + build' is the branch-protection
       # required check, so tests are enforced rather than merely available.
+      # The eval gate lives in npm test. Isolation gates need a database and
+      # embeddings; injection gates need a provider. Both self-skip when the
+      # credentials are absent, so a fork PR still runs the config gates rather than
+      # failing — but on this repo the secrets are present and the gates run for real.
       - run: npm test
+        env:
+          DATABASE_URL: ${{ secrets.EVAL_DATABASE_URL }}
+          OPENAI_API_KEY: ${{ secrets.EVAL_OPENAI_API_KEY }}

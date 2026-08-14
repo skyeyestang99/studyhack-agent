@@ -1,3 +1,23 @@
+> ## ⚠️ This harness is NOT the CI gate
+>
+> `pg_retriever.py` claims to mirror the agent's `retrieve.ts`, and it has **already
+> drifted from it**:
+>
+> - missing `m.deleted_at IS NULL` — it retrieves chunks from soft-deleted materials
+>   that production excludes
+> - missing `SET LOCAL hnsw.iterative_scan = 'relaxed_order'` — a setting that directly
+>   changes recall, which is the metric this harness exists to measure
+> - no join to `materials`, so citation-related behaviour cannot be evaluated at all
+>
+> A green run here therefore says little about production retrieval.
+>
+> **The authoritative gate is `src/eval/*.test.ts`**, which imports the production
+> `retrieve()` and `generate()` directly, so this class of drift is impossible by
+> construction. It runs in CI via `npm test`.
+>
+> This harness is still useful for exploratory analysis and golden-set generation — just
+> don't gate a release on it.
+
 # RAG Eval Harness
 
 Measures **retrieval** quality first (deterministic, cheap, numeric — validates the

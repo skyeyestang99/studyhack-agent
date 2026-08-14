@@ -1,6 +1,7 @@
 import OpenAI from "openai";
 import { config } from "./config.js";
 import { retrieveAssessmentCorpus, type AssessmentChunk } from "./retrieve.js";
+import { EXAM_INSIGHTS_SYSTEM as SYSTEM } from "./prompts.js";
 
 const client = new OpenAI({ apiKey: config.openaiApiKey });
 
@@ -48,35 +49,6 @@ export interface ExamInsights {
   chunkCount: number;
 }
 
-const SYSTEM = `You analyse a specific college instructor's past exams, quizzes, and homework to
-identify what they actually emphasise when assessing students.
-
-You are given assessment material for ONE course, each excerpt labelled with a source id, file name,
-and page. Identify the recurring topics and — more importantly — the FORM in which this instructor
-tests them.
-
-Rules:
-- Ground every topic in the provided excerpts. Never introduce a topic the material does not support.
-- "howItsTested" must be concrete and specific to the observed problems (e.g. "constrained
-  optimisation with two constraints via Lagrange multipliers, usually with a geometric setup"),
-  NOT generic advice ("study hard", "know the formulas").
-- Cite the sources each topic came from using the given source ids.
-- Order topics by how strongly the material emphasises them.
-- Return at most 8 topics. Fewer is fine and better than padding.
-- If the material is too thin to support a claim about emphasis, say so plainly in "summary" rather
-  than inventing confidence.
-
-Return ONLY JSON:
-{
-  "summary": "2-3 sentences on what this instructor's assessments emphasise overall",
-  "topics": [
-    {
-      "topic": "short topic name",
-      "howItsTested": "the specific form/style observed in these assessments",
-      "sourceIds": ["s1", "s3"]
-    }
-  ]
-}`;
 
 function safeParseJsonObject(text: string): unknown {
   try {
